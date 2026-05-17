@@ -43,8 +43,16 @@ File argument resolution:
 ## Installation
 
 ```bash
-gem build twin.gemspec
-gem install ./twin-*.gem
+gem install grubber-twin
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/rhsev/grubber-twin.git
+cd grubber-twin
+gem build grubber-twin.gemspec
+gem install ./grubber-twin-*.gem
 ```
 
 External tools required in PATH: `grubber`, `rsync`, `fzf`. For the
