@@ -19,6 +19,19 @@ Gem::Specification.new do |s|
     "bug_tracker_uri" => "https://github.com/rhsev/grubber-twin/issues",
   }
 
+  s.post_install_message = <<~MSG
+
+    twin requires these external tools in your PATH:
+      grubber  https://github.com/rhsev/grubber
+      rsync    (preinstalled on macOS)
+      fzf      brew install fzf
+
+    Optional for the preview pane:
+      apex     https://github.com/ttscoff/apex
+      glow / bat as fallbacks (cat is used if none are present)
+
+  MSG
+
   s.files       = Dir["lib/**/*.rb", "bin/*", "README.md", "ARCHITECTURE.md", "LICENSE"]
   s.bindir      = "bin"
   s.executables = ["twin"]
