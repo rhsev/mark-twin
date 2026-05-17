@@ -79,8 +79,8 @@ Example:
 ---
 Active: 1
 Label: mac-mini→macbook
-Source: /Volumes/lightning/users/extern
-Target: /Volumes/ralf
+Source: /Users/admin
+Target: /Volumes/macbook/Users/admin
 ---
 
 ## Fish Shell
