@@ -110,10 +110,10 @@ Twin has two modes: an **interactive interface** (default — see screenshots
 above) and **CLI commands** for status checks and batch sync.
 
 ```bash
-twin                         # picker — all programs across all sync-files
-twin home.md                 # picker — one sync-file in sync_dir (by name)
-twin /abs/path/to/file.md    # picker — any sync-file by absolute path
-twin ./relative/dir/         # picker — all sync-files in a directory
+twin                         # TUI — all programs across all sync-files
+twin home.md                 # TUI — one sync-file in sync_dir (by name)
+twin /abs/path/to/file.md    # TUI — any sync-file by absolute path
+twin ./relative/dir/         # TUI — all sync-files in a directory
 twin list                    # plain listing
 twin status                  # listing with source/target mtimes
 twin sync -p grubber         # sync one program by name pattern
