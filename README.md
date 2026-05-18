@@ -38,15 +38,20 @@ compact preview of the relevant sync-file section, rendered by apex:
 
 ## Installation
 
+### 1. Install grubber
+
+twin parses sync-files via [grubber](https://github.com/rhsev/grubber), a
+small Go binary. Download the latest release for your platform from
+[github.com/rhsev/grubber/releases](https://github.com/rhsev/grubber/releases)
+and put it somewhere in your `PATH` (e.g. `/usr/local/bin/grubber`).
+
+### 2. Install twin
+
 ```bash
 gem install grubber-twin
 ```
 
-External tools required in `PATH`: `grubber`, `rsync`, `fzf`. For the
-stage-2 preview, one of `apex`, `glow`, or `bat` (falls back in that order;
-`cat` if none are present).
-
-From source:
+Or from source:
 
 ```bash
 git clone https://github.com/rhsev/grubber-twin.git
@@ -54,6 +59,13 @@ cd grubber-twin
 gem build grubber-twin.gemspec
 gem install ./grubber-twin-*.gem
 ```
+
+### 3. Other tools
+
+Also required in `PATH`: `rsync` (preinstalled on macOS), `fzf`
+(`brew install fzf`). For the stage-2 preview, one of `apex`, `glow`,
+or `bat` is recommended (falls back in that order; `cat` if none are
+present).
 
 ## Quickstart
 
@@ -167,13 +179,9 @@ for reloading services or notifying companions).
 
 ## Design
 
-- **Selection unit:** Program. A program may have several blocks (paths); the
-  picker shows one row per program in stage 1, then a multi-select over its
-  paths in stage 2.
-- **Preview:** compact view — frontmatter + intro + the heading section that
-  contains the highlighted block, rendered with `apex --plugins -t terminal256`.
-- **No TUI framework.** `fzf` does the interactive part, `apex` the rendering.
-  Composition over framework.
+Sync instructions and context in one place — the same Markdown file holds
+both the `Path:` directives and the prose explaining them. No TUI framework:
+`fzf` does the interactive part, `apex` the rendering.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model and internals.
 
