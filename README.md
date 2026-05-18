@@ -106,6 +106,9 @@ via SMB or NFS). The mount check is enforced before any sync.
 
 ## Usage
 
+Twin has two modes: an **interactive interface** (default — see screenshots
+above) and **CLI commands** for status checks and batch sync.
+
 ```bash
 twin                         # picker — all programs across all sync-files
 twin home.md                 # picker — one sync-file in sync_dir (by name)
