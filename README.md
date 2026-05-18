@@ -70,6 +70,9 @@ present).
 
 ## Quickstart
 
+Twin assumes the target machine is reachable as a mounted volume (typically
+via SMB or NFS). The mount check is enforced before any sync.
+
 1. **Pick a directory for sync-files** (anywhere; this example uses `~/Sync`):
 
    ```bash
