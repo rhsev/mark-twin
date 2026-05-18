@@ -1,5 +1,9 @@
 # twin
 
+[![Gem Version](https://img.shields.io/gem/v/grubber-twin.svg)](https://rubygems.org/gems/grubber-twin)
+[![Tests](https://github.com/rhsev/grubber-twin/actions/workflows/test.yml/badge.svg)](https://github.com/rhsev/grubber-twin/actions/workflows/test.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Sync configuration folders between two Macs from self-documenting Markdown files.
 
 Sync entries are defined in Markdown files with YAML blocks — human-readable,
@@ -20,11 +24,75 @@ Sync-definitions in Markdown + YAML are three things at once:
   add new entries or refactor existing ones, and the result stays valid for both
   humans and grubber.
 
+## Screenshots
+
+Stage 1 — program picker. One row per program, color-coded status, indented
+paths underneath:
+
+![Stage 1 — program picker](docs/stage_1.png)
+
+Stage 2 — multi-select over the paths of one program. The right pane shows a
+compact preview of the relevant sync-file section, rendered by apex:
+
+![Stage 2 — Fish Shell paths with apex preview](docs/stage_2_fish.png)
+
+## Installation
+
+```bash
+gem install grubber-twin
+```
+
+External tools required in `PATH`: `grubber`, `rsync`, `fzf`. For the
+stage-2 preview, one of `apex`, `glow`, or `bat` (falls back in that order;
+`cat` if none are present).
+
+From source:
+
+```bash
+git clone https://github.com/rhsev/grubber-twin.git
+cd grubber-twin
+gem build grubber-twin.gemspec
+gem install ./grubber-twin-*.gem
+```
+
+## Quickstart
+
+1. **Pick a directory for sync-files** (anywhere; this example uses `~/Sync`):
+
+   ```bash
+   mkdir -p ~/Sync
+   ```
+
+2. **Create the config** at `~/.config/twin/config.yaml`:
+
+   ```yaml
+   sync_dir: ~/Sync
+   global_excludes:
+     - .DS_Store
+     - .git/
+   ```
+
+3. **Drop a sync-file** into `~/Sync`. The simplest starting point is to copy
+   one of the [examples](examples/) and adapt the frontmatter:
+
+   ```bash
+   cp examples/home.md ~/Sync/
+   $EDITOR ~/Sync/home.md   # edit Source: and Target:
+   ```
+
+4. **Run twin**:
+
+   ```bash
+   twin
+   ```
+
+   Pick a program, then the paths to sync, hit Enter.
+
 ## Usage
 
 ```bash
 twin                         # picker — all programs across all sync-files
-twin home_macbook.md         # picker — one sync-file in sync_dir (by name)
+twin home.md                 # picker — one sync-file in sync_dir (by name)
 twin /abs/path/to/file.md    # picker — any sync-file by absolute path
 twin ./relative/dir/         # picker — all sync-files in a directory
 twin list                    # plain listing
@@ -40,25 +108,6 @@ File argument resolution:
 - bare name (no `/`)  → looked up by substring in `sync_dir`
 - contains `/`        → resolved as path (absolute or relative); file or directory both work
 
-## Installation
-
-```bash
-gem install grubber-twin
-```
-
-Or from source:
-
-```bash
-git clone https://github.com/rhsev/grubber-twin.git
-cd grubber-twin
-gem build grubber-twin.gemspec
-gem install ./grubber-twin-*.gem
-```
-
-External tools required in PATH: `grubber`, `rsync`, `fzf`. For the
-stage-2 preview, one of `apex`, `glow`, or `bat` (falls back in that order;
-`cat` if none are present).
-
 ## Configuration
 
 `~/.config/twin/config.yaml`:
@@ -70,8 +119,11 @@ global_excludes:
   - .DS_Store
   - .git/
 
-apex_theme: ralf       # optional
-apex_width: 80         # optional
+# Optional preview rendering (apex):
+# apex_theme: default
+# apex_width: 80
+# apex_code_highlight: monokai
+# apex_code_highlight_theme: dark
 ```
 
 Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`.
@@ -79,14 +131,17 @@ Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`.
 ## Sync-files
 
 Each Markdown file represents one sync relationship. Frontmatter defines the
-relationship; YAML blocks define individual paths.
+relationship (Source/Target); YAML blocks define individual paths.
 
-Example:
+See [examples/home.md](examples/home.md) and [examples/repos.md](examples/repos.md)
+for ready-to-adapt templates.
+
+Minimal example:
 
 ````markdown
 ---
 Active: 1
-Label: mac-mini→macbook
+Label: mac-mini → macbook
 Source: /Users/admin
 Target: /Volumes/macbook/Users/admin
 ---
@@ -107,17 +162,20 @@ Frontmatter fields (`Active`, `Label`, `Source`, `Target`) are merged into
 every block by grubber. Multiple blocks can share the same `Program` — twin
 groups them and treats the program as the unit of selection.
 
-The optional `Cmd` field runs a shell command after a successful sync.
+The optional `Cmd` field runs a shell command after a successful sync (useful
+for reloading services or notifying companions).
 
 ## Design
 
 - **Selection unit:** Program. A program may have several blocks (paths); the
-  picker shows one row per program.
-- **Preview:** the whole sync-file rendered with `apex --plugins -t terminal256`.
-- **No TUI framework:** `fzf` does the interactive part, `apex` the rendering.
+  picker shows one row per program in stage 1, then a multi-select over its
+  paths in stage 2.
+- **Preview:** compact view — frontmatter + intro + the heading section that
+  contains the highlighted block, rendered with `apex --plugins -t terminal256`.
+- **No TUI framework.** `fzf` does the interactive part, `apex` the rendering.
   Composition over framework.
 
-See `ARCHITECTURE.md` for details.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model and internals.
 
 ## Tests
 
