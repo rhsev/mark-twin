@@ -174,8 +174,12 @@ Frontmatter fields (`Active`, `Label`, `Source`, `Target`) are merged into
 every block by grubber. Multiple blocks can share the same `Program` — twin
 groups them and treats the program as the unit of selection.
 
-The optional `Cmd` field runs a shell command after a successful sync (useful
-for reloading services or notifying companions).
+The optional `Cmd` field is where the hidden trick happens: after a
+successful sync, twin runs an arbitrary shell command — typically a `curl`
+to a local automation endpoint like [mi.lan](https://github.com/rhsev/mi.lan) —
+to reload the program, run an installer, restart a service, or notify
+another machine. One config sync, one config *deployed*. See the Helix
+entry in [examples/home.md](examples/home.md).
 
 ## Design
 
