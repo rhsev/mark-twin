@@ -9,7 +9,8 @@ Sync configuration folders between two Macs from self-documenting Markdown files
 Sync entries are defined in Markdown files with YAML blocks — human-readable,
 self-documenting, and queryable via [grubber](https://github.com/rhsev/grubber).
 Selection is interactive via [fzf](https://github.com/junegunn/fzf), with a
-Markdown preview rendered by [apex](https://github.com/ttscoff/apex).
+Markdown preview rendered by [apex](https://github.com/ttscoff/apex) and
+optional post-sync actions on the target via [mi.lan](https://github.com/rhsev/mi.lan).
 
 ## Why?
 
