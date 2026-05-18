@@ -29,12 +29,12 @@ Sync-definitions in Markdown + YAML are three things at once:
 Stage 1 — program picker. One row per program, color-coded status, indented
 paths underneath:
 
-![Stage 1 — program picker](docs/stage_1.png)
+![Stage 1 — program picker](https://raw.githubusercontent.com/rhsev/grubber-twin/main/docs/stage_1.png)
 
 Stage 2 — multi-select over the paths of one program. The right pane shows a
 compact preview of the relevant sync-file section, rendered by apex:
 
-![Stage 2 — Fish Shell paths with apex preview](docs/stage_2_fish.png)
+![Stage 2 — Fish Shell paths with apex preview](https://raw.githubusercontent.com/rhsev/grubber-twin/main/docs/stage_2_fish.png)
 
 ## Installation
 
