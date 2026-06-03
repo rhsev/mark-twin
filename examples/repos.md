@@ -22,13 +22,13 @@ Description: Markdown/YAML block extractor (Go)
 Exclude: build/, vendor/
 ```
 
-## grubber-twin
+## mark-twin
 
 This project. Tests stay; `.gem` artefacts are filtered globally.
 
 ```yaml
-Program: grubber-twin
-Path: rhsev/grubber-twin
+Program: mark-twin
+Path: rhsev/mark-twin
 Description: Sync CLI built on grubber
 ```
 

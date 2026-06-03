@@ -2,7 +2,7 @@ $LOAD_PATH.unshift File.expand_path("lib", __dir__)
 require "twin/version"
 
 Gem::Specification.new do |s|
-  s.name        = "grubber-twin"
+  s.name        = "mark-twin"
   s.version     = Twin::VERSION
   s.summary     = "Sync configuration folders between two Macs from self-documenting Markdown files"
   s.description = "twin reads sync-files (Markdown + YAML blocks) via grubber, " \
@@ -10,13 +10,13 @@ Gem::Specification.new do |s|
                   "fzf with an apex Markdown preview."
   s.authors     = ["Ralf Hülsmann"]
   s.email       = ["huelsmann@sevelen.net"]
-  s.homepage    = "https://github.com/rhsev/grubber-twin"
+  s.homepage    = "https://github.com/rhsev/mark-twin"
   s.license     = "MIT"
   s.required_ruby_version = ">= 3.1"
 
   s.metadata = {
-    "source_code_uri" => "https://github.com/rhsev/grubber-twin",
-    "bug_tracker_uri" => "https://github.com/rhsev/grubber-twin/issues",
+    "source_code_uri" => "https://github.com/rhsev/mark-twin",
+    "bug_tracker_uri" => "https://github.com/rhsev/mark-twin/issues",
   }
 
   s.post_install_message = <<~MSG

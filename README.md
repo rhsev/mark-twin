@@ -1,7 +1,7 @@
 # twin
 
-[![Gem Version](https://img.shields.io/gem/v/grubber-twin.svg)](https://rubygems.org/gems/grubber-twin)
-[![Tests](https://github.com/rhsev/grubber-twin/actions/workflows/test.yml/badge.svg)](https://github.com/rhsev/grubber-twin/actions/workflows/test.yml)
+[![Gem Version](https://img.shields.io/gem/v/mark-twin.svg)](https://rubygems.org/gems/mark-twin)
+[![Tests](https://github.com/rhsev/mark-twin/actions/workflows/test.yml/badge.svg)](https://github.com/rhsev/mark-twin/actions/workflows/test.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Sync configuration folders between two Macs from self-documenting Markdown files.
@@ -30,12 +30,12 @@ Sync-definitions in Markdown + YAML are three things at once:
 Stage 1 — program picker. One row per program, color-coded status, indented
 paths underneath:
 
-![Stage 1 — program picker](https://raw.githubusercontent.com/rhsev/grubber-twin/main/docs/stage_1.png)
+![Stage 1 — program picker](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_1.png)
 
 Stage 2 — multi-select over the paths of one program. The right pane shows a
 compact preview of the relevant sync-file section, rendered by apex:
 
-![Stage 2 — Fish Shell paths with apex preview](https://raw.githubusercontent.com/rhsev/grubber-twin/main/docs/stage_2_fish.png)
+![Stage 2 — Fish Shell paths with apex preview](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_2_fish.png)
 
 ## Installation
 
@@ -49,16 +49,16 @@ and put it somewhere in your `PATH` (e.g. `/usr/local/bin/grubber`).
 ### 2. Install twin
 
 ```bash
-gem install grubber-twin
+gem install mark-twin
 ```
 
 Or from source:
 
 ```bash
-git clone https://github.com/rhsev/grubber-twin.git
-cd grubber-twin
-gem build grubber-twin.gemspec
-gem install ./grubber-twin-*.gem
+git clone https://github.com/rhsev/mark-twin.git
+cd mark-twin
+gem build mark-twin.gemspec
+gem install ./mark-twin-*.gem
 ```
 
 ### 3. Other tools
