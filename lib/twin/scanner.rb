@@ -110,7 +110,9 @@ module Twin
       tgt_full = File.join(target, path)
       src_exists, src_mtime = stat(src_full)
       tgt_exists, tgt_mtime = stat(tgt_full)
-      conflict = src_exists && tgt_exists && tgt_mtime && src_mtime && tgt_mtime > src_mtime
+      # Same 60s tolerance as Job#status, so mtime jitter never flags a conflict.
+      conflict = src_exists && tgt_exists && tgt_mtime && src_mtime &&
+                 tgt_mtime - src_mtime >= 60
 
       Job.new(
         program:       r["Program"].to_s,

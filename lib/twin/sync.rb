@@ -44,8 +44,9 @@ module Twin
       return [false, output] unless status.success?
 
       if !job.cmd.empty? && !dry_run
-        cmd_out, _ = run(["sh", "-c", job.cmd])
+        cmd_out, cmd_status = run(["sh", "-c", job.cmd])
         output += "\ncmd: #{job.cmd}\n#{cmd_out}"
+        return [false, output] unless cmd_status.success?
       end
 
       [true, output]

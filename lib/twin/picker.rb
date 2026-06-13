@@ -51,12 +51,15 @@ module Twin
       name_width = programs.map { |p| p.name.length }.max
       path_width = programs.flat_map { |p| p.jobs.map { |j| j.path.length } }.max
 
-      entries = programs.map { |p| render_program_entry(p, name_width, path_width) }
-      input   = entries.join("\0")
+      entries = programs.each_with_index.map do |p, i|
+        "#{i}\t#{render_program_entry(p, name_width, path_width)}"
+      end
+      input = entries.join("\0")
 
       fzf = [
         "fzf",
         "--read0", "--ansi", "--no-multi",
+        "--delimiter=\t", "--with-nth=2..",
         "--prompt=program> ",
         "--height=100%", "--reverse",
         "--no-sort",
@@ -67,8 +70,8 @@ module Twin
       return nil unless status.success?
       return nil if output.strip.empty?
 
-      first_line = output.lines.first.to_s
-      programs.find { |p| first_line.include?(" #{p.name} ") || first_line.rstrip.end_with?(p.name) || first_line.include?(p.name) }
+      idx = output.split("\t", 2).first
+      programs[idx.to_i] if idx&.match?(/\A\d+\z/)
     end
 
     # ── Stufe 2: path multi-picker ────────────────────────────────────────────
@@ -82,6 +85,7 @@ module Twin
 
       path_width = jobs.map { |j| j.path.length }.max
       tempfiles  = write_compact_previews(program, jobs)
+      preview_cmd, mapfile = build_apex_preview_cmd(tempfiles, cfg)
 
       rows = jobs.each_with_index.map do |j, i|
         icon  = STATUS_ICONS[j.status] || "?"
@@ -89,8 +93,6 @@ module Twin
         line  = "#{icon}  #{j.path.ljust(path_width)}  #{delta}"
         "#{i}\t#{colorize(j.status, line)}"
       end
-
-      preview_cmd = build_apex_preview_cmd(tempfiles, cfg)
 
       fzf = [
         "fzf",
@@ -116,6 +118,7 @@ module Twin
       end
     ensure
       tempfiles&.each_value { |path| File.unlink(path) rescue nil }
+      File.unlink(mapfile) rescue nil if mapfile
     end
 
     # Write per-job compact-preview markdown to tempfiles. Returns {idx => path}.
@@ -131,27 +134,28 @@ module Twin
       result
     end
 
+    # Returns [preview_cmd, mapfile_path]; the caller unlinks the mapfile.
     def build_apex_preview_cmd(tempfiles, cfg)
       # Map idx → file via a small TSV, awk picks the right one for {1}.
       mapfile = Tempfile.new(["twin-map-", ".tsv"])
       tempfiles.each { |i, path| mapfile.puts("#{i}\t#{path}") }
       mapfile.close
-      ObjectSpace.define_finalizer(mapfile, ->(_) { File.unlink(mapfile.path) rescue nil })
 
       render_cmd = pick_renderer(cfg)
 
-      %(F=$(awk -v id={1} -F'\\t' '$1==id {print $2}' #{mapfile.path}); ) +
-        %([ -n "$F" ] && #{render_cmd})
+      cmd = %(F=$(awk -v id={1} -F'\\t' '$1==id {print $2}' #{mapfile.path}); ) +
+            %([ -n "$F" ] && #{render_cmd})
+      [cmd, mapfile.path]
     end
 
     # Pick the first available markdown renderer.
     def pick_renderer(cfg)
       if which("apex")
         args = ["--plugins", "-t", "terminal256"]
-        args += ["--theme", cfg.apex_theme]                         if cfg.apex_theme
-        args += ["--width", cfg.apex_width.to_s]                    if cfg.apex_width
-        args += ["--code-highlight", cfg.apex_code_highlight]       if cfg.apex_code_highlight
-        args += ["--code-highlight-theme", cfg.apex_code_highlight_theme] if cfg.apex_code_highlight_theme
+        args += ["--theme", shellesc(cfg.apex_theme)]                         if cfg.apex_theme
+        args += ["--width", shellesc(cfg.apex_width)]                         if cfg.apex_width
+        args += ["--code-highlight", shellesc(cfg.apex_code_highlight)]       if cfg.apex_code_highlight
+        args += ["--code-highlight-theme", shellesc(cfg.apex_code_highlight_theme)] if cfg.apex_code_highlight_theme
         (["apex", '"$F"'] + args).join(" ") + " 2>/dev/null"
       elsif which("glow")
         %(glow -s dark "$F" 2>/dev/null)

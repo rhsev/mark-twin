@@ -1,5 +1,6 @@
 require "optparse"
 require "json"
+require "set"
 
 require_relative "config"
 require_relative "scanner"
@@ -134,7 +135,6 @@ module Twin
           src = j.source_exists ? j.source_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
           tgt = j.target_exists ? j.target_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
           conflict = j.conflict ? (tty ? "  #{Picker.colorize(:target_newer, "!")}" : "  !") : ""
-          j_icon = tty ? Picker.colorize(j.status, "") : ""
           puts "    #{j.path}#{conflict}"
           puts "      src #{src}"
           puts "      dst #{tgt}"
@@ -240,5 +240,3 @@ module Twin
     end
   end
 end
-
-require "set"

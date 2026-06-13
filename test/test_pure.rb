@@ -191,6 +191,30 @@ class TestScannerBuildJob < Minitest::Test
     job = Twin::Scanner.build_job(valid.merge("Cmd" => "curl http://mi.lan/reload"))
     assert_equal "curl http://mi.lan/reload", job.cmd
   end
+
+  def conflict_for(target_offset)
+    Dir.mktmpdir do |dir|
+      src = File.join(dir, "src")
+      tgt = File.join(dir, "tgt")
+      FileUtils.mkdir_p(src)
+      FileUtils.mkdir_p(tgt)
+      now = Time.now
+      File.write(File.join(src, "a"), "x")
+      File.write(File.join(tgt, "a"), "x")
+      File.utime(now, now, File.join(src, "a"))
+      File.utime(now + target_offset, now + target_offset, File.join(tgt, "a"))
+      job = Twin::Scanner.build_job(valid.merge("Path" => "a", "Source" => src, "Target" => tgt))
+      return job.conflict
+    end
+  end
+
+  def test_conflict_within_tolerance_not_flagged
+    refute conflict_for(30)
+  end
+
+  def test_conflict_beyond_tolerance_flagged
+    assert conflict_for(120)
+  end
 end
 
 class TestScannerResolveFileArg < Minitest::Test
