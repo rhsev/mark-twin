@@ -9,14 +9,17 @@ sync-files (.md)
    grubber          parse Markdown, extract YAML blocks, merge frontmatter
       │
       ▼
+   Template         substitute {{tokens}} in record fields (no-op without hosts)
+      │
+      ▼
    Scanner          load_jobs → list[Job] → group(jobs) → list[Program]
       │
-      ├──▶  CLI       list / status / sync
+      ├──▶  CLI       list / status / sync / doctor
       │
       └──▶  Picker    fzf + apex preview, returns selected Program
                           │
                           ▼
-                       Sync   rsync per Job, mount check, Cmd hook
+                       Sync   rsync (or render) per Job, mount check, Cmd hook
 ```
 
 ## Package layout
@@ -24,9 +27,10 @@ sync-files (.md)
 ```
 lib/twin/
   version.rb
-  config.rb     ~/.config/twin/config.yaml loader
-  scanner.rb    Job, Program structs; grubber + stat → grouped Programs
-  sync.rb       rsync execution, mount check, post-sync hook
+  template.rb   {{token}} substitution + render-file helper
+  config.rb     ~/.config/twin/config.yaml loader; host table → var_map
+  scanner.rb    Job, Program structs; grubber + template + stat → grouped Programs
+  sync.rb       rsync / render execution, mount check, post-sync hook
   picker.rb     fzf wrapper with apex preview
   cli.rb        subcommand dispatcher
 
@@ -39,12 +43,15 @@ test/test_pure.rb
 **Job** — one YAML block:
 
 ```
-program, path, description, active, excludes, label, source, target, cmd, sync_file,
+program, path, description, active, excludes, label, source, target, cmd,
+delete, render, render_outdated, target_path_field, sync_file,
 source_exists, target_exists, source_mtime, target_mtime, conflict
 ```
 
 `Job#status` → one of `disabled / both_missing / missing_source / missing_target /
-target_newer / in_sync / source_newer`.
+target_newer / in_sync / source_newer`. Render jobs derive status from content
+(`render_outdated`), not mtime; non-render jobs ignore those fields.
+`Job#target_path` joins `target` with `target_path_field || path`.
 
 **Program** — group of Jobs sharing a `program` name:
 
@@ -64,9 +71,20 @@ sync_dir: /path/to/sync-files
 global_excludes: [".DS_Store", ".git/"]
 apex_theme: ralf
 apex_width: 80
+
+host: mini          # which host twin runs as
+target: book        # default sync target
+hosts:
+  mini: { home: /Volumes/lightning/users/extern, git: /Volumes/lightning/Git }
+  book: { home: /Users/ralf, git: /Users/ralf/git, mount: /Volumes/ralf }
 ```
 
-Environment overrides: `TWIN_SYNC_DIR` (sync_dir), `TWIN_CONFIG` (config path).
+`Config#var_map` flattens the host table for the (`host` → `target`) pair into
+`{ "src.home" => …, "dst.home" => …, "dst.mount" => … }` — empty when no hosts
+are configured (templating inert). See the **Templating** section.
+
+Environment overrides: `TWIN_SYNC_DIR` (sync_dir), `TWIN_CONFIG` (config path),
+`TWIN_HOST` (host).
 
 ## Sync-files
 
@@ -76,6 +94,32 @@ record is self-contained.
 
 Multiple blocks may share the same `Program` value — these are treated as
 one logical unit by twin.
+
+## Templating
+
+Substitution sits between grubber and `build_job`, so grubber never sees
+`{{tokens}}` and stays untouched. `Scanner.load_jobs` calls
+`Template.substitute_record` on each record's path-bearing fields (`Source`,
+`Target`, `Path`, `Target-Path`, `Exclude`, `Cmd`) using `cfg.var_map`. This
+*must* run before `build_job`, which immediately `stat`s the resolved paths.
+Unknown `{{token}}` → hard error (never sync a half-rendered path).
+
+Three namespaces, one fixed meaning each:
+
+- `{{src.*}}` — the running host's own paths (read side, `Source:`).
+- `{{dst.mount}}` — where the target is mounted here (write side, `Target:`).
+- `{{dst.*}}` — the target's native paths, used in **rendered file content**.
+
+The mount/native split is the crux: a file written to `/Volumes/ralf/…` but read
+by the target machine must contain `/Users/ralf/…`. Path fields and file content
+draw from different namespaces, so a token never means two things.
+
+`{{` opens a YAML flow mapping, so templated values must be quoted in the
+sync-file (`Source: "{{src.home}}"`) — as in Ansible. Without a `hosts` table
+`var_map` is empty and substitution is a no-op.
+
+See [docs/templating-design.md](docs/templating-design.md) for the full
+rationale.
 
 ## Picker
 
@@ -107,6 +151,11 @@ File argument resolution (`twin <arg>` and `--file=<arg>`):
 Unknown options (anything starting with `-` that isn't `--help`) print an
 error pointing at `twin --help` and exit 1.
 
+`twin doctor` checks required tools (grubber, rsync, fzf), optional renderers
+(apex, glow, bat), templating (host/target resolve, every `{{token}}` resolves),
+and whether all configured sync targets are mounted. Exits 1 if any required
+check fails.
+
 ## Sync
 
 Before syncing:
@@ -116,14 +165,33 @@ Before syncing:
 2. **Conflict warning** — emits stderr listing jobs where the target is
    newer than the source. Continues anyway (`rsync --update` skips them).
 
-Then per Job:
+Then per Job, **rsync path** (non-render):
 
 ```
-rsync -av --update [--exclude=...]* src/ tgt/
+rsync -av --itemize-changes --update [--delete] [--exclude=...]* src/ tgt/
 ```
 
-If `Cmd` is set on the block and not in dry-run mode, the command is
-executed via `sh -c` after a successful rsync.
+`--delete` is added when the Job has `delete: true` (from `Delete: true`).
+`--itemize-changes` makes change detection deterministic: `Sync.transferred?`
+matches itemize lines (`/\A[<>ch*][fdLDS]/` — `>f…`, `cd…`, `*deleting`),
+covering files, directories and deletions, with no scraping of rsync's prose.
+
+If `Cmd` is set, it runs via `sh -c` after rsync — but only when something was
+actually transferred. No-op syncs (target up to date, or target newer and
+skipped by `--update`) leave the hook silent. On failure the exit code is
+included in the output and the job is marked failed.
+
+When a job has a known conflict (`target_newer`) and nothing transferred, the
+output notes `"skipped: target is newer, source not synced"`.
+
+**Render path** (`render: true`) — `Sync.render_job`. Templates can't be
+rsync'd byte-for-byte, so instead: read source, substitute `{{dst.*}}` in the
+content, compare against the current target bytes, write only if they differ.
+`changed` drives the same `Cmd` gate. Content-hash comparison (not mtime)
+sidesteps the `--update` trap — a freshly rendered temp is always "newer".
+Render is file-only; a directory source is an error. `twin status` mirrors this:
+render-job status comes from the same content comparison (`render_outdated`),
+so a stale target with a matching mtime is still flagged `source_newer`.
 
 ## External dependencies
 

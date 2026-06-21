@@ -119,6 +119,7 @@ twin status                  # listing with source/target mtimes
 twin sync -p grubber         # sync one program by name pattern
 twin sync --file=repos       # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
+twin doctor                  # check tools, renderers, and sync targets
 twin --help                  # show usage
 ```
 
@@ -145,7 +146,8 @@ global_excludes:
 # apex_code_highlight_theme: dark
 ```
 
-Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`.
+Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`, `TWIN_HOST` (which host
+twin runs as — lets one config serve both machines).
 
 ## Sync-files
 
@@ -181,12 +183,74 @@ Frontmatter fields (`Active`, `Label`, `Source`, `Target`) are merged into
 every block by grubber. Multiple blocks can share the same `Program` — twin
 groups them and treats the program as the unit of selection.
 
-The optional `Cmd` field is where the hidden trick happens: after a
-successful sync, twin runs an arbitrary shell command — typically a `curl`
-to a local automation endpoint like [mi.lan](https://github.com/rhsev/mi.lan) —
-to reload the program, run an installer, restart a service, or notify
-another machine. One config sync, one config *deployed*. See the Helix
-entry in [examples/home.md](examples/home.md).
+The optional `Cmd` field runs an arbitrary shell command after a successful
+sync — typically a `curl` to a local automation endpoint like
+[mi.lan](https://github.com/rhsev/mi.lan) to reload a program, restart a
+service, or notify another machine. The command only runs when rsync actually
+transferred bytes; no-op syncs skip it. See the Helix entry in
+[examples/home.md](examples/home.md).
+
+The optional `Delete: true` field adds `--delete` to the rsync invocation,
+so files removed from the source are also removed on the target. Useful for
+directory syncs where the target should mirror the source exactly.
+
+## Templating
+
+Some configs differ per machine — a LaunchAgent plist that points at
+`/Volumes/lightning/…` on one Mac and `/Users/ralf/…` on another, a
+`settings.json` with a device-specific id. Those used to fall out of twin and
+get hand-maintained. Templating folds them back into one source of truth.
+
+Define a host table in `~/.config/twin/config.yaml`:
+
+```yaml
+host: mini          # which machine twin runs on
+target: book        # the machine being synced to
+
+hosts:
+  mini: { home: /Volumes/lightning/users/extern, git: /Volumes/lightning/Git }
+  book: { home: /Users/ralf, git: /Users/ralf/git, mount: /Volumes/ralf }
+```
+
+That exposes three sets of `{{tokens}}`, each with one fixed meaning:
+
+| Token | Resolves to | Use in |
+|---|---|---|
+| `{{src.home}}`, `{{src.git}}`, … | the running host's own paths | `Source:` (read side) |
+| `{{dst.mount}}` | where the target is mounted here (`/Volumes/ralf`) | `Target:` (write side) |
+| `{{dst.home}}`, `{{dst.git}}`, … | the target's *native* paths | rendered file **content** |
+
+The distinction matters: a file *written* to the mount (`/Volumes/ralf/…`) but
+*read* by the target machine must contain that machine's native paths
+(`/Users/ralf/…`). `{{dst.mount}}` and `{{dst.home}}` keep the two apart.
+
+> **Quote templated values.** `{{` at the start of a YAML value collides with
+> YAML flow-mapping syntax, so write `Source: "{{src.home}}"`, not
+> `Source: {{src.home}}` — exactly as in Ansible.
+
+`Render: true` turns a block from copy into *render*: twin reads the source as a
+template, substitutes `{{…}}` in its **content**, and writes the result only if
+it differs from the current target (so a `Cmd` hook fires only on a real change).
+`Target-Path:` overrides the target-side relative path when it differs from the
+source layout:
+
+````markdown
+## LiveSync LaunchAgent
+
+```yaml
+Program: livesync-agent
+Source: "{{src.home}}/Automation/launchd"
+Path: com.ralf.livesync.plist
+Target: "{{dst.mount}}"
+Target-Path: Library/LaunchAgents/com.ralf.livesync.plist
+Render: true
+Cmd: curl -s http://mi.lan/livesync-reload
+```
+````
+
+`twin doctor` checks that every `{{token}}` across your sync-files resolves, and
+`twin status` compares rendered output by content (not mtime). Without a `hosts`
+table, templating is inert and literal-path sync-files behave exactly as before.
 
 ## Design
 

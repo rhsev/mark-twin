@@ -5,7 +5,8 @@ module Twin
   class Config
     attr_accessor :sync_dir, :global_excludes,
                   :apex_theme, :apex_width,
-                  :apex_code_highlight, :apex_code_highlight_theme
+                  :apex_code_highlight, :apex_code_highlight_theme,
+                  :hosts, :host, :target
 
     DEFAULTS = {
       "global_excludes"           => [".DS_Store"],
@@ -13,6 +14,9 @@ module Twin
       "apex_width"                => nil,
       "apex_code_highlight"       => nil,
       "apex_code_highlight_theme" => nil,
+      "hosts"                     => {},
+      "host"                      => "",
+      "target"                    => "",
     }.freeze
 
     def initialize(data = {})
@@ -23,6 +27,27 @@ module Twin
       @apex_width                = merged["apex_width"]
       @apex_code_highlight       = merged["apex_code_highlight"]
       @apex_code_highlight_theme = merged["apex_code_highlight_theme"]
+      @hosts                     = merged["hosts"] || {}
+      @host                      = ENV["TWIN_HOST"] || merged["host"].to_s
+      @target                    = merged["target"].to_s
+    end
+
+    # Build the flat substitution map {src.home => ..., dst.home => ..., dst.mount => ...}.
+    # Returns empty hash when no hosts are configured (substitution becomes a no-op).
+    def var_map
+      return {} if hosts.empty?
+      raise "host not set in config"   if host.empty?
+      raise "target not set in config" if target.empty?
+
+      src_host = hosts[host]
+      dst_host = hosts[target]
+      raise "unknown host #{host.inspect} (not in hosts)"     unless src_host
+      raise "unknown target #{target.inspect} (not in hosts)" unless dst_host
+
+      map = {}
+      src_host.each { |k, v| map["src.#{k}"] = v.to_s }
+      dst_host.each { |k, v| map["dst.#{k}"] = v.to_s }
+      map
     end
 
     def self.load

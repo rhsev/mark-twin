@@ -1,6 +1,7 @@
 require "optparse"
 require "json"
 require "set"
+require "time"  # Time#iso8601 for --json output
 
 require_relative "config"
 require_relative "scanner"
@@ -21,6 +22,7 @@ module Twin
         twin list   [--all] [--label X] [--file X] [--json]
         twin status [--all] [--label X] [--file X] [--json]
         twin sync   [-p PATTERN] [--label X] [--file X] [--all] [--dry-run]
+        twin doctor                check tools, renderers, and sync targets
         twin --help                show this message
 
       FILE ARGUMENT:
@@ -44,6 +46,7 @@ module Twin
       when "list"     then cmd_list(cfg, argv.drop(1))
       when "status"   then cmd_status(cfg, argv.drop(1))
       when "sync"     then cmd_sync(cfg, argv.drop(1))
+      when "doctor"   then cmd_doctor(cfg)
       when "-h", "--help", "help"
         puts USAGE
       when /\A-/
@@ -188,11 +191,86 @@ module Twin
 
       puts "→ #{program.name}"
       jobs.each do |job|
-        success, output = Twin::Sync.run_job(cfg, job, dry_run: dry_run)
+        success, output, = Twin::Sync.run_job(cfg, job, dry_run: dry_run)
         puts "  • #{job.path}"
         puts output.gsub(/^/, "    ") if output && !output.strip.empty?
         warn "  error syncing #{job.path}" unless success
       end
+    end
+
+    # ── doctor ─────────────────────────────────────────────────────────────────
+
+    def cmd_doctor(cfg)
+      ok = true
+
+      puts "Tools"
+      %w[grubber rsync fzf].each do |bin|
+        if tool_available?(bin)
+          puts "  ✓  #{bin}"
+        else
+          puts "  ✗  #{bin}  (required — not found in PATH)"
+          ok = false
+        end
+      end
+
+      puts "\nRenderers (preview)"
+      found_renderer = false
+      %w[apex glow bat].each do |bin|
+        if tool_available?(bin)
+          puts "  ✓  #{bin}"
+          found_renderer = true
+        else
+          puts "  –  #{bin}  (not installed)"
+        end
+      end
+      puts "  ⚠   no renderer found — file preview will fall back to cat" unless found_renderer
+
+      puts "\nTemplating"
+      if cfg.hosts.empty?
+        puts "  –  no hosts configured"
+      else
+        %i[host target].each do |attr|
+          name = cfg.send(attr)
+          if name.empty?
+            puts "  ✗  #{attr} not set in config"
+            ok = false
+          elsif cfg.hosts.key?(name)
+            puts "  ✓  #{attr}: #{name}"
+          else
+            puts "  ✗  #{attr} #{name.inspect} not found in hosts"
+            ok = false
+          end
+        end
+      end
+
+      puts "\nTargets"
+      begin
+        programs = Scanner.load_programs(cfg, show_all: true)
+        puts "  ✓  all template tokens resolved" unless cfg.hosts.empty?
+        targets  = programs.flat_map(&:jobs).map(&:target).uniq.sort
+        if targets.empty?
+          puts "  (no programs loaded)"
+        else
+          targets.each do |tgt|
+            if Twin::Sync.mounted?(tgt)
+              puts "  ✓  #{tgt}"
+            else
+              puts "  ✗  #{tgt}  (not mounted)"
+              ok = false
+            end
+          end
+        end
+      rescue => e
+        puts "  ✗  #{e.message}"
+        ok = false
+      end
+
+      puts ok ? "\nAll checks passed." : "\nSome checks failed."
+      exit 1 unless ok
+    end
+
+    def tool_available?(name)
+      system("command -v #{name} > /dev/null 2>&1")
     end
 
     # ── option parsing ─────────────────────────────────────────────────────────

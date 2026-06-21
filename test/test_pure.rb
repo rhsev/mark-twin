@@ -367,6 +367,43 @@ class TestSyncRunJob < Minitest::Test
     refute success
     assert_includes msg, "source not found"
   end
+
+  # Real `rsync -avi` output (itemize-changes).
+  NOOP = <<~OUT
+    sending incremental file list
+
+    sent 122 bytes  received 13 bytes  270.00 bytes/sec
+    total size is 5  speedup is 0.04
+  OUT
+
+  XFER = <<~OUT
+    sending incremental file list
+    >f+++++++++ a.txt
+    cd+++++++++ sub/
+
+    sent 228 bytes  received 66 bytes  588.00 bytes/sec
+    total size is 5  speedup is 0.02
+  OUT
+
+  DELETE = <<~OUT
+    sending incremental file list
+    *deleting   sub/b.txt
+
+    sent 103 bytes  received 33 bytes  272.00 bytes/sec
+    total size is 3  speedup is 0.02
+  OUT
+
+  def test_transferred_false_on_noop
+    refute Twin::Sync.transferred?(NOOP)
+  end
+
+  def test_transferred_true_on_file_and_dir
+    assert Twin::Sync.transferred?(XFER)
+  end
+
+  def test_transferred_true_on_delete
+    assert Twin::Sync.transferred?(DELETE)
+  end
 end
 
 class TestConfigErrors < Minitest::Test
@@ -406,5 +443,283 @@ class TestConfig < Minitest::Test
     assert_equal "/y", cfg.sync_dir
   ensure
     ENV.delete("TWIN_SYNC_DIR")
+  end
+end
+
+class TestTemplate < Minitest::Test
+  def vars
+    { "src.home" => "/Volumes/src", "dst.home" => "/Users/ralf", "dst.mount" => "/Volumes/ralf" }
+  end
+
+  def test_passthrough_no_tokens
+    assert_equal "plain string", Twin::Template.substitute("plain string", vars, context: "test")
+  end
+
+  def test_substitutes_known_token
+    result = Twin::Template.substitute("{{src.home}}/foo", vars, context: "test")
+    assert_equal "/Volumes/src/foo", result
+  end
+
+  def test_substitutes_multiple_tokens
+    result = Twin::Template.substitute("{{dst.mount}}/x and {{dst.home}}/y", vars, context: "test")
+    assert_equal "/Volumes/ralf/x and /Users/ralf/y", result
+  end
+
+  def test_raises_on_unknown_token
+    err = assert_raises(RuntimeError) { Twin::Template.substitute("{{unknown}}", vars, context: "ctx") }
+    assert_includes err.message, "{{unknown}}"
+    assert_includes err.message, "ctx"
+  end
+
+  def test_non_string_returned_unchanged
+    assert_equal 42, Twin::Template.substitute(42, vars, context: "test")
+  end
+
+  def test_substitute_record_replaces_template_fields
+    r = { "Source" => "{{src.home}}/sync", "Target" => "{{dst.mount}}", "Path" => "foo" }
+    result = Twin::Template.substitute_record(r, vars, context: "test")
+    assert_equal "/Volumes/src/sync", result["Source"]
+    assert_equal "/Volumes/ralf",     result["Target"]
+    assert_equal "foo",               result["Path"]
+  end
+
+  def test_substitute_record_noop_without_tokens
+    r = { "Source" => "/abs/path", "Target" => "/other" }
+    assert_equal r, Twin::Template.substitute_record(r, vars, context: "test")
+  end
+
+  def test_substitute_record_noop_with_empty_vars
+    r = { "Source" => "{{src.home}}/x" }
+    result = Twin::Template.substitute_record(r, {}, context: "test")
+    assert_equal r, result
+  end
+
+  def test_substitute_record_raises_on_unknown_token
+    r = { "Source" => "{{oops}}/path" }
+    assert_raises(RuntimeError) { Twin::Template.substitute_record(r, vars, context: "test") }
+  end
+end
+
+class TestConfigVarMap < Minitest::Test
+  HOSTS = {
+    "hosts"  => {
+      "mini" => { "home" => "/Volumes/ext", "git" => "/Volumes/git" },
+      "book" => { "home" => "/Users/ralf", "git" => "/Users/ralf/git", "mount" => "/Volumes/ralf" },
+    },
+    "host"   => "mini",
+    "target" => "book",
+    "sync_dir" => "/tmp",
+  }.freeze
+
+  def cfg(**overrides) = Twin::Config.new(HOSTS.merge(overrides))
+
+  def test_builds_flat_map
+    m = cfg.var_map
+    assert_equal "/Volumes/ext",  m["src.home"]
+    assert_equal "/Volumes/git",  m["src.git"]
+    assert_equal "/Users/ralf",   m["dst.home"]
+    assert_equal "/Users/ralf/git", m["dst.git"]
+    assert_equal "/Volumes/ralf", m["dst.mount"]
+  end
+
+  def test_empty_when_no_hosts_configured
+    assert_equal({}, Twin::Config.new("sync_dir" => "/tmp").var_map)
+  end
+
+  def test_raises_on_missing_host
+    err = assert_raises(RuntimeError) { cfg("host" => "unknown").var_map }
+    assert_includes err.message, "unknown"
+  end
+
+  def test_raises_on_missing_target
+    err = assert_raises(RuntimeError) { cfg("target" => "unknown").var_map }
+    assert_includes err.message, "unknown"
+  end
+
+  def test_raises_when_host_not_set
+    err = assert_raises(RuntimeError) { cfg("host" => "").var_map }
+    assert_includes err.message, "host not set"
+  end
+end
+
+class TestJobTargetPath < Minitest::Test
+  def job(**kw)
+    defaults = {
+      program: "p", path: "a/b.txt", description: "", active: 1, excludes: [],
+      label: "", source: "/src", target: "/tgt", cmd: "", sync_file: "",
+      source_exists: false, target_exists: false,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    }
+    Twin::Job.new(**defaults.merge(kw))
+  end
+
+  def test_target_path_defaults_to_path
+    assert_equal "/tgt/a/b.txt", job.target_path
+  end
+
+  def test_target_path_field_overrides
+    j = job(target_path_field: "lib/x/b.txt")
+    assert_equal "/tgt/lib/x/b.txt", j.target_path
+  end
+
+  def test_source_path_always_uses_path
+    j = job(target_path_field: "other.txt")
+    assert_equal "/src/a/b.txt", j.source_path
+  end
+end
+
+class TestRenderJob < Minitest::Test
+  HOST_CFG = {
+    "hosts"  => {
+      "mini" => { "home" => "/mini-home" },
+      "book" => { "home" => "/book-home", "mount" => "/mnt/book" },
+    },
+    "host"   => "mini",
+    "target" => "book",
+    "sync_dir" => "/tmp",
+  }.freeze
+
+  def cfg = Twin::Config.new(HOST_CFG)
+
+  def job(src:, tgt:, tgt_path: nil, cmd: "")
+    Twin::Job.new(
+      program: "p", path: File.basename(src), description: "", active: 1,
+      excludes: [], label: "", source: File.dirname(src), target: File.dirname(tgt),
+      cmd: cmd, delete: false, render: true,
+      target_path_field: tgt_path ? File.basename(tgt_path) : nil,
+      sync_file: "", source_exists: true, target_exists: false,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    )
+  end
+
+  def test_renders_tokens_and_writes_file
+    Dir.mktmpdir do |d|
+      src = File.join(d, "t.conf"); File.write(src, "home={{dst.home}}\n")
+      tgt = File.join(d, "out", "t.conf")
+      success, _out, changed = Twin::Sync.run_job(cfg, job(src: src, tgt: tgt))
+      assert success
+      assert changed
+      assert_equal "home=/book-home\n", File.read(tgt)
+    end
+  end
+
+  def test_skips_write_when_content_identical
+    Dir.mktmpdir do |d|
+      src = File.join(d, "t.conf"); File.write(src, "home=/book-home\n")
+      tgt = File.join(d, "t.conf.out"); File.write(tgt, "home=/book-home\n")
+      j = Twin::Job.new(
+        program: "p", path: "t.conf", description: "", active: 1, excludes: [],
+        label: "", source: d, target: d, cmd: "", delete: false, render: true,
+        target_path_field: "t.conf.out", sync_file: "",
+        source_exists: true, target_exists: true,
+        source_mtime: nil, target_mtime: nil, conflict: false,
+      )
+      success, out, changed = Twin::Sync.run_job(cfg, j)
+      assert success
+      refute changed
+      assert_includes out, "unchanged"
+    end
+  end
+
+  def test_errors_on_directory_source
+    Dir.mktmpdir do |d|
+      j = Twin::Job.new(
+        program: "p", path: ".", description: "", active: 1, excludes: [],
+        label: "", source: d, target: d, cmd: "", delete: false, render: true,
+        target_path_field: nil, sync_file: "",
+        source_exists: true, target_exists: false,
+        source_mtime: nil, target_mtime: nil, conflict: false,
+      )
+      success, out, = Twin::Sync.run_job(cfg, j)
+      refute success
+      assert_includes out, "directory"
+    end
+  end
+
+  def test_raises_on_unknown_token_in_content
+    Dir.mktmpdir do |d|
+      src = File.join(d, "t.conf"); File.write(src, "x={{unknown.var}}\n")
+      tgt = File.join(d, "out.conf")
+      success, out, = Twin::Sync.run_job(cfg, job(src: src, tgt: tgt))
+      refute success
+      assert_includes out, "{{unknown.var}}"
+    end
+  end
+
+  def test_dry_run_does_not_write
+    Dir.mktmpdir do |d|
+      src = File.join(d, "t.conf"); File.write(src, "home={{dst.home}}\n")
+      tgt = File.join(d, "out.conf")
+      success, out, changed = Twin::Sync.run_job(cfg, job(src: src, tgt: tgt), dry_run: true)
+      assert success
+      refute changed
+      refute File.exist?(tgt)
+      assert_includes out, "dry-run"
+    end
+  end
+
+  def test_cmd_runs_only_when_changed
+    Dir.mktmpdir do |d|
+      src = File.join(d, "t.conf"); File.write(src, "x={{dst.home}}\n")
+      tgt = File.join(d, "out.conf")
+      flag = File.join(d, "cmd-ran")
+      j = job(src: src, tgt: tgt, cmd: "touch #{flag}")
+      Twin::Sync.run_job(cfg, j)             # first run → changed → cmd runs
+      assert File.exist?(flag), "cmd should run on change"
+      File.delete(flag)
+      Twin::Sync.run_job(cfg, j)             # second run → unchanged → cmd skipped
+      refute File.exist?(flag), "cmd should be skipped when unchanged"
+    end
+  end
+end
+
+class TestRenderStatus < Minitest::Test
+  HOST_CFG = {
+    "hosts" => { "mini" => { "home" => "/m" }, "book" => { "home" => "/b", "mount" => "/mnt" } },
+    "host" => "mini", "target" => "book", "sync_dir" => "/tmp",
+  }.freeze
+
+  # Build a render Job through the real scanner path, given a template and
+  # optional existing target content.
+  def render_job(template:, target: nil)
+    Dir.mktmpdir do |d|
+      File.write(File.join(d, "t.conf"), template)
+      File.write(File.join(d, "out.conf"), target) if target
+      r = {
+        "Program" => "P", "Path" => "t.conf", "Source" => d, "Target" => d,
+        "Target-Path" => "out.conf", "Render" => true, "_note_file" => "x.md",
+        "Active" => 1,
+      }
+      cfg = Twin::Config.new(HOST_CFG)
+      yield Twin::Scanner.build_job(r, cfg.var_map)
+    end
+  end
+
+  def test_missing_target_is_missing_target
+    render_job(template: "x={{dst.home}}\n") { |j| assert_equal :missing_target, j.status }
+  end
+
+  def test_outdated_target_is_source_newer
+    render_job(template: "x={{dst.home}}\n", target: "x=/old\n") do |j|
+      assert_equal :source_newer, j.status
+    end
+  end
+
+  def test_matching_target_is_in_sync
+    render_job(template: "x={{dst.home}}\n", target: "x=/b\n") do |j|
+      assert_equal :in_sync, j.status
+    end
+  end
+
+  def test_unresolved_token_is_source_newer
+    render_job(template: "x={{bad.token}}\n", target: "x=/b\n") do |j|
+      assert_equal :source_newer, j.status   # needs attention, not silently in_sync
+    end
+  end
+
+  def test_render_job_never_conflicts
+    render_job(template: "x={{dst.home}}\n", target: "x=/b\n") do |j|
+      refute j.conflict
+    end
   end
 end
