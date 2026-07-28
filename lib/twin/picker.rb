@@ -17,6 +17,7 @@ module Twin
       missing_target: "!",
       missing_source: "!",
       both_missing:   "✗",
+      unreachable:    "?",
       disabled:       "·",
     }.freeze
 
@@ -27,6 +28,7 @@ module Twin
       missing_target: "\e[31m",   # red
       missing_source: "\e[31m",   # red
       both_missing:   "\e[31m",   # red
+      unreachable:    "\e[31m",   # red
       disabled:       "\e[2m",    # dim
     }.freeze
 

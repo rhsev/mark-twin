@@ -1,4 +1,5 @@
 require_relative "twin/version"
+require_relative "twin/remote"
 require_relative "twin/template"
 require_relative "twin/config"
 require_relative "twin/scanner"

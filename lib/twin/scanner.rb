@@ -1,19 +1,24 @@
 require "json"
 require "open3"
 
+require_relative "remote"
+
 module Twin
   # One YAML block from a sync-file, enriched with live filesystem state.
   Job = Struct.new(
     :program, :path, :description, :active, :excludes, :label,
     :source, :target, :cmd, :delete, :render, :render_outdated, :target_path_field, :sync_file,
     :source_exists, :target_exists, :source_mtime, :target_mtime, :conflict,
+    :target_unreachable,
     keyword_init: true,
   ) do
     def source_path = File.join(source, path)
     def target_path = File.join(target, target_path_field || path)
+    def remote?     = Twin::Remote.remote?(target)
 
     def status
       return :disabled if active != 1
+      return :unreachable if target_unreachable
       return :both_missing if !source_exists && !target_exists
       return :missing_source unless source_exists
       return :missing_target unless target_exists
@@ -41,7 +46,7 @@ module Twin
     # Aggregate status across jobs — worst first.
     def status
       states = jobs.map(&:status)
-      %i[both_missing missing_source missing_target target_newer source_newer disabled in_sync]
+      %i[unreachable both_missing missing_source missing_target target_newer source_newer disabled in_sync]
         .find { |s| states.include?(s) } || :in_sync
     end
 
@@ -69,9 +74,34 @@ module Twin
         raise "grubber returned invalid JSON: #{e.message}"
       end
       vars = cfg.var_map
-      records.filter_map do |r|
+      jobs = records.filter_map do |r|
         context = "#{r["Program"]} in #{File.basename(r["_note_file"].to_s)}"
         build_job(Twin::Template.substitute_record(r, vars, context: context), vars)
+      end
+      fill_remote_stats(jobs)
+      jobs
+    end
+
+    # Remote targets can't be stat'ed locally — batch them into one ssh
+    # round-trip per host. A failed ssh marks the jobs unreachable instead
+    # of aborting the scan (local jobs stay usable).
+    def fill_remote_stats(jobs)
+      jobs.select { |j| j.remote? && j.active == 1 }
+          .group_by { |j| Twin::Remote.split(j.target).first }
+          .each do |host, host_jobs|
+        stats = Twin::Remote.stat_paths(host, host_jobs.map { |j| Twin::Remote.split(j.target_path).last })
+        host_jobs.each do |j|
+          rpath = Twin::Remote.split(j.target_path).last
+          if stats.nil?
+            j.target_unreachable = true
+            next
+          end
+          mtime = stats[rpath]
+          j.target_exists = !mtime.nil?
+          j.target_mtime  = mtime
+          j.conflict      = j.source_exists && mtime && j.source_mtime &&
+                            mtime - j.source_mtime >= 60
+        end
       end
     end
 
@@ -114,11 +144,18 @@ module Twin
 
       render   = r["Render"] == true
       excludes = (r["Exclude"] || "").split(",").map(&:strip).reject(&:empty?)
+      remote   = Twin::Remote.remote?(target)
+
+      if render && remote
+        raise "#{r["Program"]}: Render is not supported for remote targets (#{target})"
+      end
 
       src_full = File.join(source, path)
       tgt_full = File.join(target, target_path_field || path)
       src_exists, src_mtime = stat(src_full)
-      tgt_exists, tgt_mtime = stat(tgt_full)
+      # Remote targets are stat'ed in one batched ssh call after all jobs are
+      # built (fill_remote_stats) — until then they read as missing.
+      tgt_exists, tgt_mtime = remote ? [false, nil] : stat(tgt_full)
 
       # Render jobs: status is content-based (mtime is meaningless for a rendered
       # target). conflict stays false so the mtime conflict-warning skips them.
@@ -148,6 +185,7 @@ module Twin
         source_mtime:     src_mtime,
         target_mtime:     tgt_mtime,
         conflict:         !!conflict,
+        target_unreachable: false,
       )
     end
 

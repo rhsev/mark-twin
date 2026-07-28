@@ -1,5 +1,7 @@
 require "fileutils"
 
+require_relative "remote"
+
 module Twin
   module Sync
     module_function
@@ -35,6 +37,8 @@ module Twin
     # Render a template Job: read source, substitute {{vars}}, write if changed.
     # Returns [success, output, changed].
     def render_job(cfg, job, dry_run: false)
+      return [false, "render: remote targets are not supported", false] if job.remote?
+
       src = job.source_path
       tgt = job.target_path
 
@@ -89,21 +93,16 @@ module Twin
 
       return [false, "source not found: #{src}", false] unless File.exist?(src)
 
-      FileUtils.mkdir_p(File.dirname(tgt))
-
-      args = ["rsync", "-av", "--itemize-changes", "--update"]
-      args << "--delete" if job.delete
-      args << "--dry-run" if dry_run
-      cfg.global_excludes.each { |ex| args << "--exclude=#{ex}" }
-      job.excludes.each       { |ex| args << "--exclude=#{ex}" }
-
-      if File.directory?(src)
-        args << "#{src}/" << "#{tgt}/"
+      if job.remote?
+        host, rpath = Twin::Remote.split(tgt)
+        unless dry_run || Twin::Remote.mkdir_p(host, File.dirname(rpath))
+          return [false, "ssh: could not create #{File.dirname(rpath)} on #{host}", false]
+        end
       else
-        args << src << tgt
+        FileUtils.mkdir_p(File.dirname(tgt))
       end
 
-      output, status = run(args)
+      output, status = run(rsync_args(cfg, job, dry_run: dry_run))
       return [false, output, false] unless status.success?
 
       xfr = !dry_run && transferred?(output)
@@ -126,6 +125,44 @@ module Twin
       end
 
       [true, output, xfr]
+    end
+
+    # Full rsync argument vector for a job.
+    def rsync_args(cfg, job, dry_run: false)
+      src = job.source_path
+      tgt = job.target_path
+
+      args = ["rsync", "-av", "--itemize-changes", "--update"]
+      if job.delete
+        args << "--delete"
+        args.concat(backup_args(job))
+      end
+      args << "--dry-run" if dry_run
+      cfg.global_excludes.each { |ex| args << "--exclude=#{ex}" }
+      job.excludes.each       { |ex| args << "--exclude=#{ex}" }
+
+      if File.directory?(src)
+        args << "#{src}/" << "#{tgt}/"
+      else
+        args << src << tgt
+      end
+      args
+    end
+
+    # Safety net for --delete: deleted and overwritten files land in a
+    # per-run backup dir on the target side (<target>/.twin-backup/<stamp>).
+    # rsync only creates the dir when it actually backs something up.
+    # The exclude keeps a backup dir inside the transfer root (Path: ".")
+    # from being deleted by the very sync it protects against.
+    def backup_args(job)
+      root = job.remote? ? Twin::Remote.split(job.target).last : job.target
+      dir  = File.join(root, ".twin-backup", run_stamp)
+      ["--backup", "--backup-dir=#{dir}", "--exclude=.twin-backup/"]
+    end
+
+    # One timestamp per twin process, so a multi-job run shares a backup dir.
+    def run_stamp
+      @run_stamp ||= Time.now.strftime("%Y-%m-%d_%H%M%S")
     end
 
     # Sync all jobs in a Program. Returns array of [job, success, output].

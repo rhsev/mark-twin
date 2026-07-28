@@ -723,3 +723,122 @@ class TestRenderStatus < Minitest::Test
     end
   end
 end
+
+class TestRemote < Minitest::Test
+  def test_remote_with_user
+    assert Twin::Remote.remote?("ralf@server:/srv/www")
+  end
+
+  def test_remote_without_user
+    assert Twin::Remote.remote?("server:/srv/www")
+  end
+
+  def test_local_absolute_path_is_not_remote
+    refute Twin::Remote.remote?("/Volumes/ralf/git")
+  end
+
+  def test_local_path_with_colon_after_slash_is_not_remote
+    refute Twin::Remote.remote?("/tmp/a:b")
+  end
+
+  def test_empty_is_not_remote
+    refute Twin::Remote.remote?("")
+  end
+
+  def test_split
+    assert_equal ["ralf@server", "/srv/www"], Twin::Remote.split("ralf@server:/srv/www")
+  end
+
+  def test_split_keeps_later_colons_in_path
+    assert_equal ["server", "/a:b"], Twin::Remote.split("server:/a:b")
+  end
+
+  def test_shellesc_quotes_spaces_and_quotes
+    assert_equal "'/a dir/it'\\''s'", Twin::Remote.shellesc("/a dir/it's")
+  end
+end
+
+class TestRemoteJobs < Minitest::Test
+  def valid
+    {
+      "Program" => "foo", "Path" => "www",
+      "Source" => "/src", "Target" => "ralf@server:/srv",
+      "Description" => "", "Active" => 1,
+      "Exclude" => "", "Cmd" => "", "Label" => "",
+      "_note_file" => "server.md",
+    }
+  end
+
+  def test_remote_target_builds_without_local_stat
+    job = Twin::Scanner.build_job(valid)
+    refute_nil job
+    assert job.remote?
+    refute job.target_exists
+    assert_nil job.target_mtime
+    refute job.conflict
+  end
+
+  def test_remote_target_path_joins_correctly
+    job = Twin::Scanner.build_job(valid)
+    assert_equal "ralf@server:/srv/www", job.target_path
+  end
+
+  def test_render_plus_remote_raises
+    err = assert_raises(RuntimeError) do
+      Twin::Scanner.build_job(valid.merge("Render" => true))
+    end
+    assert_match(/Render is not supported for remote/, err.message)
+  end
+
+  def test_unreachable_status
+    job = Twin::Scanner.build_job(valid)
+    job.target_unreachable = true
+    assert_equal :unreachable, job.status
+  end
+
+  def test_unreachable_wins_program_aggregation
+    a = Twin::Scanner.build_job(valid)
+    a.target_unreachable = true
+    b = Twin::Scanner.build_job(valid.merge("Target" => "/tmp"))
+    prog = Twin::Program.new(name: "foo", jobs: [a, b])
+    assert_equal :unreachable, prog.status
+  end
+end
+
+class TestBackupArgs < Minitest::Test
+  def job(**kw)
+    defaults = {
+      program: "p", path: "www", active: 1, excludes: [],
+      source: "/src", target: "/tgt", cmd: "", delete: true,
+    }
+    Twin::Job.new(**defaults.merge(kw))
+  end
+
+  def cfg = Twin::Config.new("sync_dir" => "/sync", "global_excludes" => [])
+
+  def test_delete_adds_backup_args
+    args = Twin::Sync.rsync_args(cfg, job)
+    assert_includes args, "--delete"
+    assert_includes args, "--backup"
+    assert args.any? { |a| a.start_with?("--backup-dir=/tgt/.twin-backup/") }
+    assert_includes args, "--exclude=.twin-backup/"
+  end
+
+  def test_no_delete_no_backup_args
+    args = Twin::Sync.rsync_args(cfg, job(delete: false))
+    refute_includes args, "--backup"
+    refute args.any? { |a| a.start_with?("--backup-dir=") }
+  end
+
+  def test_remote_backup_dir_uses_remote_path
+    args = Twin::Sync.rsync_args(cfg, job(target: "ralf@server:/srv"))
+    assert args.any? { |a| a.start_with?("--backup-dir=/srv/.twin-backup/") }
+  end
+
+  def test_backup_dir_shared_within_run
+    a = Twin::Sync.rsync_args(cfg, job).find { |x| x.start_with?("--backup-dir=") }
+    b = Twin::Sync.rsync_args(cfg, job).find { |x| x.start_with?("--backup-dir=") }
+    assert_equal a, b
+  end
+end
+
