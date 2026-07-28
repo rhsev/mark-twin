@@ -265,3 +265,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model and internals.
 ```bash
 rake test
 ```
+
+---
+
+*Part of a family of plain-text tools — the [profile page](https://github.com/rhsev) has the map.*
