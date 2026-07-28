@@ -842,3 +842,147 @@ class TestBackupArgs < Minitest::Test
   end
 end
 
+class TestJournal < Minitest::Test
+  def job
+    Twin::Job.new(program: "webapp", path: "www", target: "server:/srv", active: 1)
+  end
+
+  def with_state_dir
+    Dir.mktmpdir do |dir|
+      old = ENV["TWIN_STATE_DIR"]
+      ENV["TWIN_STATE_DIR"] = dir
+      yield dir
+    ensure
+      ENV["TWIN_STATE_DIR"] = old
+    end
+  end
+
+  def test_record_and_tail
+    with_state_dir do
+      Twin::Journal.record(job, success: true, transferred: true)
+      Twin::Journal.record(job, success: false, transferred: false, output: "rsync: boom\n")
+      entries = Twin::Journal.tail(10)
+      assert_equal 2, entries.size
+      assert_equal "webapp", entries[0]["program"]
+      assert entries[0]["ok"]
+      assert entries[0]["changed"]
+      refute entries[1]["ok"]
+      assert_equal "rsync: boom", entries[1]["error"]
+      refute entries[0].key?("error")
+    end
+  end
+
+  def test_tail_limits_and_survives_garbage
+    with_state_dir do
+      3.times { Twin::Journal.record(job, success: true, transferred: false) }
+      File.open(Twin::Journal.log_path, "a") { |f| f.puts "not json" }
+      assert_equal 1, Twin::Journal.tail(2).size   # 2 lines: garbage + 1 valid
+      assert_equal 3, Twin::Journal.tail(10).size
+    end
+  end
+
+  def test_tail_empty_without_file
+    with_state_dir do
+      assert_equal [], Twin::Journal.tail(5)
+    end
+  end
+end
+
+class TestAddHelpers < Minitest::Test
+  def write_syncfile(dir, name, source:, target: "/tgt", body: "")
+    File.write(File.join(dir, name), <<~MD)
+      ---
+      Active: 1
+      Source: #{source}
+      Target: #{target}
+      ---
+      #{body}
+    MD
+    File.join(dir, name)
+  end
+
+  def test_frontmatter_parsed_and_substituted
+    Dir.mktmpdir do |dir|
+      f = write_syncfile(dir, "home.md", source: "\"{{src.home}}\"")
+      fm = Twin::Add.frontmatter(f, { "src.home" => "/Users/x" })
+      assert_equal "/Users/x", fm["Source"]
+      assert_equal "/tgt", fm["Target"]
+    end
+  end
+
+  def test_frontmatter_nil_without_frontmatter
+    Dir.mktmpdir do |dir|
+      f = File.join(dir, "plain.md")
+      File.write(f, "# just markdown\n")
+      assert_nil Twin::Add.frontmatter(f)
+    end
+  end
+
+  def test_candidates_matches_ancestor_source
+    Dir.mktmpdir do |dir|
+      write_syncfile(dir, "home.md",  source: "/Users/x")
+      write_syncfile(dir, "repos.md", source: "/Users/x/git")
+      write_syncfile(dir, "other.md", source: "/srv")
+      cands = Twin::Add.candidates(dir, "/Users/x/git/twin")
+      assert_equal %w[home.md repos.md], cands.map { |f, _| File.basename(f) }
+    end
+  end
+
+  def test_candidates_no_partial_component_match
+    Dir.mktmpdir do |dir|
+      write_syncfile(dir, "home.md", source: "/Users/x")
+      assert_empty Twin::Add.candidates(dir, "/Users/xy/foo")
+    end
+  end
+
+  def test_relative_path
+    assert_equal "git/twin", Twin::Add.relative_path("/Users/x", "/Users/x/git/twin")
+    assert_equal ".", Twin::Add.relative_path("/Users/x", "/Users/x")
+  end
+
+  def test_suggest_excludes
+    Dir.mktmpdir do |dir|
+      FileUtils.mkdir_p(File.join(dir, ".git"))
+      FileUtils.mkdir_p(File.join(dir, "node_modules"))
+      assert_equal [".git/", "node_modules/"], Twin::Add.suggest_excludes(dir)
+    end
+  end
+
+  def test_suggest_excludes_empty_for_file
+    Tempfile.create("f") do |f|
+      assert_empty Twin::Add.suggest_excludes(f.path)
+    end
+  end
+
+  def test_build_block_minimal
+    block = Twin::Add.build_block(program: "fish", path: ".config/fish")
+    assert_includes block, "## fish"
+    assert_includes block, "Program: fish"
+    assert_includes block, "Path: .config/fish"
+    assert_includes block, "TODO: document why"
+    refute_includes block, "Exclude:"
+    refute_includes block, "Delete:"
+    refute_includes block, "Cmd:"
+  end
+
+  def test_build_block_full
+    block = Twin::Add.build_block(
+      program: "web", path: "www", description: "site",
+      excludes: [".git/"], delete: true, cmd: "ssh host 'reload'",
+      prose: "Deployed straight from the build dir."
+    )
+    assert_includes block, "Exclude: .git/"
+    assert_includes block, "Delete: true"
+    assert_includes block, "Cmd: ssh host 'reload'"
+    assert_includes block, "Deployed straight"
+    refute_includes block, "TODO"
+  end
+
+  def test_frontmatter_text
+    txt = Twin::Add.frontmatter_text(source: "/a", target: "h:/b", label: "x → y")
+    assert txt.start_with?("---\nActive: 1\n")
+    assert_includes txt, "Label: x → y"
+    assert_includes txt, "Source: /a"
+    assert_includes txt, "Target: h:/b"
+  end
+end

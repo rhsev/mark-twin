@@ -6,6 +6,8 @@ require "time"  # Time#iso8601 for --json output
 require_relative "config"
 require_relative "scanner"
 require_relative "sync"
+require_relative "journal"
+require_relative "add"
 require_relative "picker"
 
 module Twin
@@ -22,6 +24,9 @@ module Twin
         twin list   [--all] [--label X] [--file X] [--json]
         twin status [--all] [--label X] [--file X] [--json]
         twin sync   [-p PATTERN] [--label X] [--file X] [--all] [--dry-run]
+                    [--quiet] [--skip-unavailable]
+        twin add <path>            scaffold a new sync entry for a local path
+        twin log    [-n N] [--json]  recent journal entries (default 20)
         twin doctor                check tools, renderers, and sync targets
         twin --help                show this message
 
@@ -46,6 +51,8 @@ module Twin
       when "list"     then cmd_list(cfg, argv.drop(1))
       when "status"   then cmd_status(cfg, argv.drop(1))
       when "sync"     then cmd_sync(cfg, argv.drop(1))
+      when "add"      then cmd_add(cfg, argv.drop(1))
+      when "log"      then cmd_log(argv.drop(1))
       when "doctor"   then cmd_doctor(cfg)
       when "-h", "--help", "help"
         puts USAGE
@@ -137,6 +144,7 @@ module Twin
         p.jobs.each do |j|
           src = j.source_exists ? j.source_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
           tgt = j.target_exists ? j.target_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
+          tgt = "(unreachable)" if j.target_unreachable
           conflict = j.conflict ? (tty ? "  #{Picker.colorize(:target_newer, "!")}" : "  !") : ""
           puts "    #{j.path}#{conflict}"
           puts "      src #{src}"
@@ -156,31 +164,40 @@ module Twin
       end
 
       if programs.empty?
-        puts "no matching programs"
+        puts "no matching programs" unless opts[:quiet]
         return
       end
 
-      programs.each { |p| sync_program(cfg, p, dry_run: opts[:dry_run]) }
+      results = programs.map do |p|
+        sync_jobs(cfg, p, p.active_jobs,
+                  dry_run: opts[:dry_run], quiet: opts[:quiet],
+                  skip_unavailable: opts[:skip_unavailable])
+      end
+      exit 1 unless results.all?
     end
 
-    def sync_program(cfg, program, dry_run: false)
-      sync_jobs(cfg, program, program.active_jobs, dry_run: dry_run)
-    end
-
-    def sync_jobs(cfg, program, jobs, dry_run: false)
+    # Sync the given jobs. Returns true when every attempted job succeeded.
+    # quiet:            print only conflicts, errors, and jobs that changed something
+    # skip_unavailable: skip jobs whose target is unmounted/unreachable instead of aborting
+    def sync_jobs(cfg, program, jobs, dry_run: false, quiet: false, skip_unavailable: false)
       jobs = jobs.select { |j| j.active == 1 }
-      return if jobs.empty?
+      return true if jobs.empty?
 
-      # one mount check per unique target root
-      checked = Set.new
-      jobs.each do |j|
-        next if checked.include?(j.target)
-        unless Twin::Sync.mounted?(j.target)
-          warn "abort: #{j.target} is not a mounted volume"
+      # one availability check per unique target root:
+      # local targets must be mounted volumes, remote ones reachable via ssh
+      availability = {}
+      jobs.each { |j| availability[j.target] ||= target_availability(j) }
+      jobs, unavailable = jobs.partition { |j| availability[j.target] == :ok }
+
+      unavailable.map { |j| availability[j.target] }.uniq.each do |reason|
+        if skip_unavailable
+          puts "skipped: #{reason}" unless quiet
+        else
+          warn "abort: #{reason}"
           exit 1
         end
-        checked << j.target
       end
+      return true if jobs.empty?
 
       conflicts = jobs.select(&:conflict)
       unless conflicts.empty?
@@ -189,12 +206,73 @@ module Twin
         warn "continuing sync (--update skips newer files on target)."
       end
 
-      puts "→ #{program.name}"
+      header_printed = false
+      all_ok = true
       jobs.each do |job|
-        success, output, = Twin::Sync.run_job(cfg, job, dry_run: dry_run)
+        success, output, transferred = Twin::Sync.run_job(cfg, job, dry_run: dry_run)
+        Twin::Journal.record(job, success: success, transferred: transferred, output: output) unless dry_run
+        all_ok &&= success
+        next if quiet && success && !transferred
+
+        unless header_printed
+          puts "→ #{program.name}"
+          header_printed = true
+        end
         puts "  • #{job.path}"
         puts output.gsub(/^/, "    ") if output && !output.strip.empty?
         warn "  error syncing #{job.path}" unless success
+      end
+      all_ok
+    end
+
+    # :ok, or a human-readable reason the target can't be synced right now.
+    def target_availability(job)
+      if job.remote?
+        host, = Twin::Remote.split(job.target)
+        return :ok if Twin::Remote.reachable?(host)
+        "#{host} is not reachable via ssh"
+      else
+        return :ok if Twin::Sync.mounted?(job.target)
+        "#{job.target} is not a mounted volume"
+      end
+    end
+
+    # ── add ────────────────────────────────────────────────────────────────────
+
+    def cmd_add(cfg, args)
+      result = Twin::Add.run(cfg, args)
+      return unless result && result[:dry_run]
+      cmd_sync(cfg, ["-p", result[:program],
+                     "--file=#{File.basename(result[:file])}", "--dry-run"])
+    end
+
+    # ── log ────────────────────────────────────────────────────────────────────
+
+    def cmd_log(args)
+      n = 20
+      json = false
+      OptionParser.new do |o|
+        o.on("-n N", Integer) { |v| n = v }
+        o.on("--json")        { json = true }
+      end.parse!(args)
+
+      entries = Twin::Journal.tail(n)
+      if json
+        puts JSON.pretty_generate(entries)
+        return
+      end
+      if entries.empty?
+        puts "journal is empty (#{Twin::Journal.log_path})"
+        return
+      end
+
+      tty = $stdout.tty?
+      entries.each do |e|
+        ts   = Time.parse(e["ts"]).strftime("%Y-%m-%d %H:%M:%S")
+        mark = e["ok"] ? "✓" : "✗"
+        mark = Picker.colorize(e["ok"] ? :in_sync : :both_missing, mark) if tty
+        note = e["ok"] ? (e["changed"] ? "changed" : "no-op") : "error: #{e["error"]}"
+        puts "#{ts}  #{mark}  #{e["program"]}  #{e["path"]}  (#{note})"
       end
     end
 
@@ -252,7 +330,15 @@ module Twin
           puts "  (no programs loaded)"
         else
           targets.each do |tgt|
-            if Twin::Sync.mounted?(tgt)
+            if Twin::Remote.remote?(tgt)
+              host, = Twin::Remote.split(tgt)
+              if Twin::Remote.reachable?(host)
+                puts "  ✓  #{tgt}  (ssh)"
+              else
+                puts "  ✗  #{tgt}  (ssh: #{host} not reachable)"
+                ok = false
+              end
+            elsif Twin::Sync.mounted?(tgt)
               puts "  ✓  #{tgt}"
             else
               puts "  ✗  #{tgt}  (not mounted)"
@@ -287,13 +373,16 @@ module Twin
     end
 
     def parse_sync_opts(args)
-      opts = { show_all: false, label: nil, file: nil, pattern: nil, dry_run: false }
+      opts = { show_all: false, label: nil, file: nil, pattern: nil, dry_run: false,
+               quiet: false, skip_unavailable: false }
       OptionParser.new do |o|
         o.on("--all")          { opts[:show_all] = true }
         o.on("--label=L")      { |v| opts[:label] = v }
         o.on("--file=F")       { |v| opts[:file] = v }
         o.on("-p", "--pattern=P") { |v| opts[:pattern] = v }
         o.on("--dry-run")      { opts[:dry_run] = true }
+        o.on("-q", "--quiet")  { opts[:quiet] = true }
+        o.on("--skip-unavailable") { opts[:skip_unavailable] = true }
       end.parse!(args)
       opts
     end
