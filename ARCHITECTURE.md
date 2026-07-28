@@ -27,10 +27,13 @@ sync-files (.md)
 ```
 lib/twin/
   version.rb
+  remote.rb     ssh targets: detection, reachability, batched stat, mkdir
   template.rb   {{token}} substitution + render-file helper
   config.rb     ~/.config/twin/config.yaml loader; host table → var_map
   scanner.rb    Job, Program structs; grubber + template + stat → grouped Programs
   sync.rb       rsync / render execution, mount check, post-sync hook
+  journal.rb    append-only sync journal (~/.local/state/twin/log.jsonl)
+  add.rb        `twin add` — interactive scaffolding of new sync entries
   picker.rb     fzf wrapper with apex preview
   cli.rb        subcommand dispatcher
 
@@ -48,8 +51,8 @@ delete, render, render_outdated, target_path_field, sync_file,
 source_exists, target_exists, source_mtime, target_mtime, conflict
 ```
 
-`Job#status` → one of `disabled / both_missing / missing_source / missing_target /
-target_newer / in_sync / source_newer`. Render jobs derive status from content
+`Job#status` → one of `disabled / unreachable / both_missing / missing_source /
+missing_target / target_newer / in_sync / source_newer`. Render jobs derive status from content
 (`render_outdated`), not mtime; non-render jobs ignore those fields.
 `Job#target_path` joins `target` with `target_path_field || path`.
 
@@ -151,17 +154,60 @@ File argument resolution (`twin <arg>` and `--file=<arg>`):
 Unknown options (anything starting with `-` that isn't `--help`) print an
 error pointing at `twin --help` and exit 1.
 
+`twin sync` returns exit 1 when any job failed. `--quiet` suppresses output
+for successful no-op jobs (conflicts, errors and real transfers still print);
+`--skip-unavailable` skips unmounted/unreachable targets instead of aborting.
+The combination is the unattended-run mode (launchd/cron).
+
+Every non-dry-run job lands in the journal (`Journal.record`): one JSON line
+in `~/.local/state/twin/log.jsonl` (`TWIN_STATE_DIR` overrides the directory)
+with timestamp, program, path, target, `ok`, `changed`, and a truncated error
+line on failure. `twin log [-n N] [--json]` reads it back. Journal write
+failures warn once and never break a sync.
+
+`twin add <path>` (`add.rb`) scaffolds a new entry: it matches the expanded
+path against the token-substituted `Source:` frontmatter of every sync-file
+(files with no or foreign roots drop out), computes `Path:` relative to the
+chosen root, suggests excludes from a fixed list of generated/heavy dirs found
+in the source (`SUGGEST_EXCLUDES`), rejects paths the file already has a
+block for, and appends heading + prose stub + YAML block. With no covering
+sync-file it can create one (frontmatter from prompts). The pure helpers
+(`frontmatter`, `candidates`, `relative_path`, `suggest_excludes`,
+`build_block`) are unit-tested; the prompt flow reads plain stdin, so it is
+scriptable by piping answers.
+
 `twin doctor` checks required tools (grubber, rsync, fzf), optional renderers
 (apex, glow, bat), templating (host/target resolve, every `{{token}}` resolves),
 and whether all configured sync targets are mounted. Exits 1 if any required
 check fails.
 
+## Remote targets
+
+`Target: user@host:/path` (rsync notation; colon before the first slash) makes
+a job remote — `Job#remote?`. Sources stay local, twin pushes.
+
+- **Stat**: remote paths can't be `File.stat`ed, so `build_job` leaves them
+  "missing" and `Scanner.fill_remote_stats` fills them in afterwards — one
+  `ssh` round-trip per host for all its paths (`Remote.stat_paths`: paths over
+  stdin, `path\tepoch` back; BSD `stat -f %m` with GNU `stat -c %Y` fallback).
+  A failed ssh sets `target_unreachable` → status `:unreachable`; the scan
+  itself never fails on a dead host.
+- **Reachability** replaces the mount check (`Remote.reachable?`,
+  `ssh -o BatchMode=yes … true` — key auth only, never prompts).
+- **rsync** needs no changes: the target string is already in its remote
+  syntax. Parent directories are created via `ssh host mkdir -p` first.
+- **`Cmd`** still runs locally (`sh -c`); acting on the server means writing
+  an `ssh host '…'` command in the sync-file.
+- **`Render: true` + remote raises** at scan time — render reads/writes target
+  content, which twin only does on local (mounted) paths.
+
 ## Sync
 
 Before syncing:
 
-1. **Mount check** — every unique target root must be a mount point
-   (`File.stat.dev != parent.dev`). Aborts if unmounted.
+1. **Mount check** — every unique local target root must be a mount point
+   (`File.stat.dev != parent.dev`); remote targets must be ssh-reachable.
+   Aborts otherwise.
 2. **Conflict warning** — emits stderr listing jobs where the target is
    newer than the source. Continues anyway (`rsync --update` skips them).
 
@@ -171,7 +217,13 @@ Then per Job, **rsync path** (non-render):
 rsync -av --itemize-changes --update [--delete] [--exclude=...]* src/ tgt/
 ```
 
-`--delete` is added when the Job has `delete: true` (from `Delete: true`).
+`--delete` is added when the Job has `delete: true` (from `Delete: true`),
+together with `--backup --backup-dir=<target>/.twin-backup/<run-stamp>` —
+deleted and overwritten files are moved aside, not destroyed. The stamp is
+per-process, so one run shares a backup dir; rsync only creates it when it
+actually backs something up. `--exclude=.twin-backup/` protects the backup
+dir from a `Path: "."` sync deleting it. For remote targets the backup dir
+is the path part of the target (it lives on the receiving side).
 `--itemize-changes` makes change detection deterministic: `Sync.transferred?`
 matches itemize lines (`/\A[<>ch*][fdLDS]/` — `>f…`, `cd…`, `*deleting`),
 covering files, directories and deletions, with no scraping of rsync's prose.

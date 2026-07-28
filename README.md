@@ -119,9 +119,57 @@ twin status                  # listing with source/target mtimes
 twin sync -p grubber         # sync one program by name pattern
 twin sync --file=repos       # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
+twin log                     # recent journal entries (-n N, --json)
 twin doctor                  # check tools, renderers, and sync targets
 twin --help                  # show usage
 ```
+
+### Adding a sync entry
+
+`twin add <path>` scaffolds a new entry interactively, so the judgment calls
+of setting up a sync become prompts with defaults:
+
+```
+$ twin add ~/.config/fish
+sync-file: home_macbook.md  (/Users/admin → /Volumes/macbook/Users/admin)
+Program name [fish]:
+Why is this synced? (one line of prose): Shell config incl. abbreviations.
+Description (short, for listings) [fish]: Fish Shell configuration
+Exclude (comma-separated) [.git/]:
+Mirror deletions on target (Delete: true)? (y/N) [n]:
+Post-sync Cmd (empty for none):
+
+added "fish" to home_macbook.md
+Run a dry-run now? (Y/n) [y]:
+```
+
+twin matches the path against the `Source:` roots of your sync-files (asking
+which to use when several match), derives `Path:` relative to that root,
+suggests excludes for what it finds in the directory (`.git/`,
+`node_modules/`, `.venv/`, …), refuses duplicates, and appends a Markdown
+block — prose stub included. If no sync-file covers the path, it offers to
+create one (frontmatter and all), which is also the quickest way to start
+syncing to a new SSH target.
+
+Every synced job is journaled to `~/.local/state/twin/log.jsonl` (one JSON
+line per job: timestamp, program, path, outcome). `twin log` shows the recent
+history; `twin sync` exits non-zero when any job failed.
+
+### Unattended syncs
+
+For a scheduled run (launchd, cron), combine two flags:
+
+```bash
+twin sync --quiet --skip-unavailable
+```
+
+`--quiet` prints only conflicts, errors, and jobs that actually changed
+something — a no-op run is silent. `--skip-unavailable` skips targets that
+are currently unmounted or unreachable instead of aborting, so a laptop that
+isn't docked doesn't turn into an error. Combined, the run produces output
+(and a non-zero exit) only when something genuinely needs attention, which is
+exactly what launchd's stdout/stderr logging wants; the journal still records
+every job.
 
 File argument resolution:
 
@@ -192,7 +240,55 @@ transferred bytes; no-op syncs skip it. See the Helix entry in
 
 The optional `Delete: true` field adds `--delete` to the rsync invocation,
 so files removed from the source are also removed on the target. Useful for
-directory syncs where the target should mirror the source exactly.
+directory syncs where the target should mirror the source exactly. As a
+safety net, deleted and overwritten files are moved to a per-run backup
+directory on the target (`<target>/.twin-backup/<timestamp>/`) instead of
+being destroyed — prune it occasionally.
+
+## SSH targets
+
+`Target:` accepts remote destinations in rsync notation — `user@host:/path` or
+`host:/path`. Everything else stays the same: the YAML block, excludes,
+`Delete:`, the `Cmd` hook.
+
+````markdown
+---
+Active: 1
+Label: mini → server
+Source: /Volumes/lightning/Git/Website
+Target: ralf@server:/srv/www
+---
+
+## Website
+
+Static site, deployed straight from the build directory.
+
+```yaml
+Program: website
+Path: public
+Description: static site
+Exclude: .git/
+Cmd: ssh ralf@server 'sudo systemctl reload caddy'
+```
+````
+
+Details:
+
+- **Push only.** `Source:` stays local; twin syncs *to* the remote host.
+- **Key-based auth required.** twin probes and stats hosts with
+  `ssh -o BatchMode=yes`, which never prompts for a password. Set up an SSH
+  key (`ssh-copy-id host`) first; `twin doctor` shows whether a host is
+  reachable.
+- **Status works remotely.** `twin status` and the picker stat all remote
+  paths of a host in a single ssh round-trip (macOS and Linux targets both
+  supported). An unreachable host shows as `?` instead of failing the scan.
+- **The mount check becomes a reachability check** — sync aborts if the host
+  doesn't answer.
+- **`Cmd` runs locally**, exactly as for mounted targets. To act on the
+  server, make the command an `ssh host '…'` call (see example above).
+- **`Render: true` is not supported** for remote targets (twin would have to
+  read and write remote file contents). Render locally or keep rendered files
+  on mounted targets.
 
 ## Templating
 
