@@ -163,6 +163,26 @@ Every job is journaled to `~/.local/state/twin/log.jsonl` — one JSON line with
 timestamp, program, path and outcome. `twin sync` exits non-zero if any job
 failed.
 
+### Reading a dry-run
+
+`--dry-run` passes rsync's `--itemize-changes` through, which is precise but
+terse. The first two characters are what matter:
+
+| Line | Means |
+|---|---|
+| `>f+++++++++` | new file, does not exist on the target yet |
+| `>f.s.......` | `s` is set: the size differs, so the content really changed |
+| `>f..t......` | only `t`: same size, later timestamp — usually identical bytes |
+| `.f...p.....` | no transfer at all, permissions only |
+| `.d..tp.....` | a directory's own timestamp or permissions |
+| `*deleting` | removed on the target (`Delete: true` jobs) |
+
+Two rules cover most of it: a leading `>` means data would move and a leading
+`.` means it would not, and among the flags `s` is the one that proves content
+changed. A dry-run full of `.f...p.....` lines is a no-op wearing a costume;
+one full of `>f..t......` lines is twin re-stamping files it need not have
+touched, which is normal after syncing a tree in both directions.
+
 ## Sync-files
 
 One Markdown file per relationship. Frontmatter sets it up, YAML blocks define
@@ -261,6 +281,49 @@ Source: /Volumes/lightning/Git/Website
 Target: ralf@server:/srv/www
 ---
 ```
+
+## Two shapes of sync
+
+The mechanics are the same either way, but what you *mean* differs, and it
+decides how you should answer everything below.
+
+**A mirror.** Both machines are yours, both get worked on, and each direction
+is its own entry with `Source:` and `Target:` swapped. Neither side is more
+right than the other; a file being newer over there is ordinary, and the
+question is which version you want. This is what the two-Macs examples in this
+README describe.
+
+**A deploy.** One side is the truth and the other only runs it — a server, a
+container, a NAS. The rule that makes this work is short: *the target is never
+a source.* Nothing gets edited over there, so anything that shows up as a
+target-side change means the rule was broken, and that is worth stopping for
+rather than waving through.
+
+Write the rule into the sync-file itself, in the prose where the next person —
+you, in a year — will read it:
+
+````markdown
+---
+Active: 1
+Label: mini → dylan
+Source: /Volumes/lightning/Git/rhsev/dy.lan
+Target: /Volumes/docker/dylan
+---
+
+# Dylan
+
+Deploy to the container. **Work happens locally; the target is never a
+source.** A `target_newer` in `twin status` is therefore not a normal
+state — find out who edited over there before overwriting it.
+````
+
+The practical difference is which answer you pre-arrange for automation. On a
+mirror there is rarely a right answer in advance, so run those syncs by hand,
+or with `--skip-conflicts` and read the log. On a deploy `--force` matches the
+model — the source *is* the truth — but it discards a target-side edit without
+showing it to you first. That is precisely the trade the prompt exists to make
+deliberate, so prefer `--skip-conflicts` for scheduled runs and keep `--force`
+for the moment you have looked and decided.
 
 ## When the target has changed too
 
