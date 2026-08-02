@@ -119,6 +119,8 @@ twin status                  # listing with source/target mtimes
 twin sync -p grubber         # sync one program by name pattern
 twin sync --file=repos       # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
+twin sync --force            # overwrite target-side changes without asking
+twin sync --skip-conflicts   # keep target-side changes, sync everything else
 twin log                     # recent journal entries (-n N, --json)
 twin doctor                  # check tools, renderers, and sync targets
 twin --help                  # show usage
@@ -154,6 +156,41 @@ syncing to a new SSH target.
 Every synced job is journaled to `~/.local/state/twin/log.jsonl` (one JSON
 line per job: timestamp, program, path, outcome). `twin log` shows the recent
 history; `twin sync` exits non-zero when any job failed.
+
+### When the target has changed too
+
+A sync has a direction: the source wins. But targets get edited — a quick fix
+made on the server at midnight, a config tweaked where it runs. Twin looks for
+that before it moves the first byte, and asks once for the whole program:
+
+```
+target has changed since the last sync — 1 file(s) differ:
+  ! app/code.rb (target 2h newer)
+syncing would replace them with the source version.
+
+overwrite these on the target and sync? [y]es / [d]iff / [n]o (abort)
+```
+
+`d` prints a unified diff per file, then asks again. `n` aborts the entire
+program — nothing is written, so you never end up with half a deploy applied.
+
+Two properties make this bearable in daily use:
+
+- **Content, not timestamps.** A file that is merely newer on the target with
+  identical bytes is not a conflict, and does not ask. Sync a tree in both
+  directions and you accumulate dozens of those; a prompt that fires on them
+  gets answered without being read.
+- **Directory mtimes are ignored.** Editing a file in place leaves its
+  directory's mtime untouched, and `rsync -a` equalises those anyway. Twin asks
+  rsync what it would actually transfer instead of guessing from the directory.
+
+Note that `twin status` is still mtime-based and cannot see an in-place edit.
+It is the cheap overview; `twin sync` is what decides.
+
+For automation, answer in advance: `--force` overwrites, `--skip-conflicts`
+leaves target-side changes alone and syncs the rest. Without a terminal and
+without either flag, a real conflict aborts the run with exit code 1 rather
+than picking an answer for you.
 
 ### Unattended syncs
 
@@ -223,13 +260,51 @@ Configuration for the fish shell, including completions and abbreviations.
 Program: Fish Shell
 Path: .config/fish
 Description: Fish Shell configuration
-Exclude: conf.d/local.fish
+Own: conf.d/local.fish
 ```
 ````
+
+### Exclude or Own?
+
+Both keep rsync away from a path, and both take a comma-separated list
+(`Exclude: *.log, __pycache__/`). They differ in what they mean, and `twin
+status` reports them differently:
+
+- **`Exclude:`** — not part of this sync at all. Build artefacts, logs, caches,
+  `.git/`, a test script that has no business on the server.
+- **`Own:`** — inside the sync scope, but the **target** owns it. Machine-specific
+  configuration the source must never clobber: `conf.d/local.fish`,
+  `lazy-lock.json`, a per-host credentials file.
+
+The distinction is documentation, not mechanism. Six months later, `Own:` still
+says "this is deliberate, the other machine maintains it", where an `Exclude:`
+sitting between `*.dwarf` and `.DS_Store` reads like noise you once filtered out.
 
 Frontmatter fields (`Active`, `Label`, `Source`, `Target`) are merged into
 every block by grubber. Multiple blocks can share the same `Program` — twin
 groups them and treats the program as the unit of selection.
+
+### Field reference
+
+All field names are capitalised English. A key twin does not know is ignored
+silently, and a missing `Active` counts as `0` — so a typo shows up as an entry
+that never syncs rather than as an error.
+
+| Field | Where | Meaning |
+|---|---|---|
+| `Program` | block | Group name; blocks sharing it sync together |
+| `Path` | block | Path relative to `Source` (file or directory) |
+| `Source` | either | Absolute base path on this machine |
+| `Target` | either | Absolute base path, or `user@host:/path` for ssh |
+| `Target-Path` | block | Path under `Target`, when it differs from `Path` |
+| `Active` | either | `1` syncs, `0` skips. Default `0` |
+| `Description` | block | Shown in listings and the picker |
+| `Label` | either | Free-text grouping, filterable via `--label` |
+| `Exclude` | block | Comma-separated paths that are not part of the sync |
+| `Own` | block | Comma-separated paths the **target** owns (see above) |
+| `Delete` | block | `true` mirrors deletions, with backups |
+| `Cmd` | block | Shell command, run only when bytes actually moved |
+| `Render` | block | `true` substitutes `{{tokens}}` instead of copying |
 
 The optional `Cmd` field runs an arbitrary shell command after a successful
 sync — typically a `curl` to a local automation endpoint like

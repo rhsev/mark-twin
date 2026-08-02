@@ -6,7 +6,7 @@ require_relative "remote"
 module Twin
   # One YAML block from a sync-file, enriched with live filesystem state.
   Job = Struct.new(
-    :program, :path, :description, :active, :excludes, :label,
+    :program, :path, :description, :active, :excludes, :owned, :label,
     :source, :target, :cmd, :delete, :render, :render_outdated, :target_path_field, :sync_file,
     :source_exists, :target_exists, :source_mtime, :target_mtime, :conflict,
     :target_unreachable,
@@ -15,6 +15,10 @@ module Twin
     def source_path = File.join(source, path)
     def target_path = File.join(target, target_path_field || path)
     def remote?     = Twin::Remote.remote?(target)
+
+    # Everything rsync must not touch: Exclude (not part of the sync at all)
+    # plus Own (part of the scope, but the target owns it).
+    def all_excludes = excludes + (owned || [])
 
     def status
       return :disabled if active != 1
@@ -143,7 +147,12 @@ module Twin
       return nil if path.empty? || source.empty? || target.empty?
 
       render   = r["Render"] == true
-      excludes = (r["Exclude"] || "").split(",").map(&:strip).reject(&:empty?)
+      excludes = split_list(r["Exclude"])
+      # Own: paths inside the sync scope that the TARGET owns — machine-specific
+      # config the source must never clobber. Same rsync effect as Exclude, but
+      # kept apart so `status` can name the intent instead of hiding it among
+      # build artefacts and .DS_Store.
+      owned    = split_list(r["Own"])
       remote   = Twin::Remote.remote?(target)
 
       if render && remote
@@ -171,6 +180,7 @@ module Twin
         description:      r["Description"].to_s,
         active:           (r["Active"] || 0).to_i,
         excludes:         excludes,
+        owned:            owned,
         label:            r["Label"].to_s,
         source:           source,
         target:           target,
@@ -194,6 +204,11 @@ module Twin
       [true, st.mtime]
     rescue Errno::ENOENT, Errno::EACCES
       [false, nil]
+    end
+
+    # Comma-separated block field → array of trimmed, non-empty entries.
+    def split_list(value)
+      (value || "").split(",").map(&:strip).reject(&:empty?)
     end
 
     # For a render job: is the target out of date with the rendered template?

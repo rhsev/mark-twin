@@ -85,7 +85,7 @@ module Twin
 
     # Sync one Job. Returns [success, combined_output, transferred].
     # transferred is true when rsync actually moved bytes (false on no-op or dry_run).
-    def run_job(cfg, job, dry_run: false)
+    def run_job(cfg, job, dry_run: false, force: false)
       return render_job(cfg, job, dry_run: dry_run) if job.render
 
       src = job.source_path
@@ -102,12 +102,12 @@ module Twin
         FileUtils.mkdir_p(File.dirname(tgt))
       end
 
-      output, status = run(rsync_args(cfg, job, dry_run: dry_run))
+      output, status = run(rsync_args(cfg, job, dry_run: dry_run, force: force))
       return [false, output, false] unless status.success?
 
       xfr = !dry_run && transferred?(output)
 
-      if job.conflict && !xfr && !dry_run
+      if job.conflict && !xfr && !dry_run && !force
         output += "\nskipped: target is newer, source not synced"
       end
 
@@ -128,18 +128,23 @@ module Twin
     end
 
     # Full rsync argument vector for a job.
-    def rsync_args(cfg, job, dry_run: false)
+    #
+    # force: drop --update, so a file that is newer on the target is overwritten
+    # anyway. Only ever set after the user agreed to it (see Twin::Conflict), or
+    # via `twin sync --force`.
+    def rsync_args(cfg, job, dry_run: false, force: false)
       src = job.source_path
       tgt = job.target_path
 
-      args = ["rsync", "-av", "--itemize-changes", "--update"]
+      args = ["rsync", "-av", "--itemize-changes"]
+      args << "--update" unless force
       if job.delete
         args << "--delete"
         args.concat(backup_args(job))
       end
       args << "--dry-run" if dry_run
       cfg.global_excludes.each { |ex| args << "--exclude=#{ex}" }
-      job.excludes.each       { |ex| args << "--exclude=#{ex}" }
+      job.all_excludes.each   { |ex| args << "--exclude=#{ex}" }
 
       if File.directory?(src)
         args << "#{src}/" << "#{tgt}/"
@@ -166,8 +171,8 @@ module Twin
     end
 
     # Sync all jobs in a Program. Returns array of [job, success, output].
-    def run_program(cfg, program, dry_run: false)
-      program.active_jobs.map { |job| [job, *run_job(cfg, job, dry_run: dry_run)] }
+    def run_program(cfg, program, dry_run: false, force: false)
+      program.active_jobs.map { |job| [job, *run_job(cfg, job, dry_run: dry_run, force: force)] }
     end
 
     def run(args)

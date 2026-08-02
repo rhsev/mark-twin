@@ -986,3 +986,167 @@ class TestAddHelpers < Minitest::Test
     assert_includes txt, "Target: h:/b"
   end
 end
+
+class TestOwnField < Minitest::Test
+  def valid
+    {
+      "Program" => "fish", "Path" => ".config/fish",
+      "Source" => "/src", "Target" => "/tgt",
+      "Description" => "", "Active" => 1,
+      "Exclude" => "", "Cmd" => "", "Label" => "",
+      "_note_file" => "home.md",
+    }
+  end
+
+  def test_own_parsed_like_exclude
+    job = Twin::Scanner.build_job(valid.merge("Own" => "conf.d/local.fish, conf.d/atuin.env.fish"))
+    assert_equal ["conf.d/local.fish", "conf.d/atuin.env.fish"], job.owned
+  end
+
+  def test_own_defaults_to_empty
+    assert_equal [], Twin::Scanner.build_job(valid).owned
+  end
+
+  def test_own_stays_separate_from_excludes
+    job = Twin::Scanner.build_job(valid.merge("Exclude" => "*.log", "Own" => "local.fish"))
+    assert_equal ["*.log"],     job.excludes
+    assert_equal ["local.fish"], job.owned
+  end
+
+  def test_all_excludes_merges_both
+    job = Twin::Scanner.build_job(valid.merge("Exclude" => "*.log", "Own" => "local.fish"))
+    assert_equal ["*.log", "local.fish"], job.all_excludes
+  end
+
+  def test_all_excludes_tolerates_nil_owned
+    job = Twin::Job.new(program: "p", path: "a", excludes: ["x"], owned: nil)
+    assert_equal ["x"], job.all_excludes
+  end
+end
+
+class TestRsyncForceFlag < Minitest::Test
+  def job(**kw)
+    defaults = {
+      program: "p", path: "www", active: 1, excludes: [], owned: [],
+      source: "/src", target: "/tgt", cmd: "", delete: false,
+    }
+    Twin::Job.new(**defaults.merge(kw))
+  end
+
+  def cfg = Twin::Config.new("sync_dir" => "/sync", "global_excludes" => [])
+
+  def test_update_is_the_default
+    assert_includes Twin::Sync.rsync_args(cfg, job), "--update"
+  end
+
+  def test_force_drops_update
+    refute_includes Twin::Sync.rsync_args(cfg, job, force: true), "--update"
+  end
+
+  def test_owned_paths_become_excludes
+    args = Twin::Sync.rsync_args(cfg, job(owned: ["local.fish"]))
+    assert_includes args, "--exclude=local.fish"
+  end
+
+  def test_excludes_and_owned_both_applied
+    args = Twin::Sync.rsync_args(cfg, job(excludes: ["*.log"], owned: ["local.fish"]))
+    assert_includes args, "--exclude=*.log"
+    assert_includes args, "--exclude=local.fish"
+  end
+end
+
+class TestConflictItemizeParsing < Minitest::Test
+  def paths(output)
+    # itemized_paths runs rsync; parse the same lines directly instead.
+    output.lines.filter_map do |line|
+      m = Twin::Conflict::ITEMIZE_LINE.match(line)
+      next unless m
+      rel = m[1]
+      next if rel == "./" || rel.end_with?("/")
+      rel
+    end
+  end
+
+  def test_picks_changed_files_only
+    out = <<~OUT
+      sending incremental file list
+      .d..tp..... ./
+      >f.st...... monitor.sh
+      >f+++++++++ smoke.sh
+      .f...p..... icons/web.svg
+
+      sent 199 bytes  received 31 bytes
+    OUT
+    assert_equal ["monitor.sh", "smoke.sh"], paths(out)
+  end
+
+  def test_skips_directories
+    assert_equal [], paths(".d..tp..... core/\ncd+++++++++ core/stage/\n")
+  end
+
+  def test_skips_deleting_lines
+    assert_equal [], paths("*deleting   old.rb\n")
+  end
+
+  def test_handles_paths_with_spaces
+    assert_equal ["My Folder/a b.txt"], paths(">f.st...... My Folder/a b.txt\n")
+  end
+end
+
+class TestConflictContent < Minitest::Test
+  def test_same_bytes_are_not_a_conflict
+    Dir.mktmpdir do |dir|
+      a = File.join(dir, "a"); File.write(a, "hello")
+      b = File.join(dir, "b"); File.write(b, "hello")
+      assert Twin::Conflict.same_content?(a, b)
+    end
+  end
+
+  def test_different_bytes_are_a_conflict
+    Dir.mktmpdir do |dir|
+      a = File.join(dir, "a"); File.write(a, "hello")
+      b = File.join(dir, "b"); File.write(b, "world")
+      refute Twin::Conflict.same_content?(a, b)
+    end
+  end
+
+  def test_same_size_different_content
+    Dir.mktmpdir do |dir|
+      a = File.join(dir, "a"); File.write(a, "aaaa")
+      b = File.join(dir, "b"); File.write(b, "bbbb")
+      refute Twin::Conflict.same_content?(a, b)
+    end
+  end
+
+  def test_missing_file_is_not_same
+    Dir.mktmpdir do |dir|
+      a = File.join(dir, "a"); File.write(a, "x")
+      refute Twin::Conflict.same_content?(a, File.join(dir, "nope"))
+    end
+  end
+
+  def test_detect_skips_when_a_side_is_missing
+    job = Twin::Job.new(program: "p", path: "a", source: "/s", target: "/t",
+                        excludes: [], owned: [], render: false,
+                        source_exists: true, target_exists: false)
+    cfg = Twin::Config.new("sync_dir" => "/sync", "global_excludes" => [])
+    assert_equal [], Twin::Conflict.detect(cfg, job)
+  end
+
+  def test_detect_skips_render_jobs
+    job = Twin::Job.new(program: "p", path: "a", source: "/s", target: "/t",
+                        excludes: [], owned: [], render: true,
+                        source_exists: true, target_exists: true)
+    cfg = Twin::Config.new("sync_dir" => "/sync", "global_excludes" => [])
+    assert_equal [], Twin::Conflict.detect(cfg, job)
+  end
+
+  def test_text_detection
+    Dir.mktmpdir do |dir|
+      t = File.join(dir, "t"); File.write(t, "plain text")
+      b = File.join(dir, "b"); File.binwrite(b, "bin\0ary")
+      assert Twin::Conflict.text?(t)
+      refute Twin::Conflict.text?(b)
+    end
+  end
+end

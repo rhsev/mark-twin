@@ -19,6 +19,11 @@ sync-files (.md)
       └──▶  Picker    fzf + apex preview, returns selected Program
                           │
                           ▼
+                          │
+                          ▼
+                    Conflict   paired dry-runs → files --update would hold
+                          │     back → content compare → ask once, or abort
+                          ▼
                        Sync   rsync (or render) per Job, mount check, Cmd hook
 ```
 
@@ -32,6 +37,7 @@ lib/twin/
   config.rb     ~/.config/twin/config.yaml loader; host table → var_map
   scanner.rb    Job, Program structs; grubber + template + stat → grouped Programs
   sync.rb       rsync / render execution, mount check, post-sync hook
+  conflict.rb   target-side changes: detection via paired dry-runs, diffs
   journal.rb    append-only sync journal (~/.local/state/twin/log.jsonl)
   add.rb        `twin add` — interactive scaffolding of new sync entries
   picker.rb     fzf wrapper with apex preview
@@ -46,10 +52,15 @@ test/test_pure.rb
 **Job** — one YAML block:
 
 ```
-program, path, description, active, excludes, label, source, target, cmd,
+program, path, description, active, excludes, owned, label, source, target, cmd,
 delete, render, render_outdated, target_path_field, sync_file,
 source_exists, target_exists, source_mtime, target_mtime, conflict
 ```
+
+`excludes` and `owned` both become `--exclude` (via `Job#all_excludes`); they
+are kept apart so `status` can report intent. `conflict` is the coarse mtime
+flag used by `status` only — conflict *resolution* ignores it and asks rsync
+directly, because a directory's mtime says nothing about edits inside it.
 
 `Job#status` → one of `disabled / unreachable / both_missing / missing_source /
 missing_target / target_newer / in_sync / source_newer`. Render jobs derive status from content

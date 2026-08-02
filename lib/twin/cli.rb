@@ -25,6 +25,7 @@ module Twin
         twin status [--all] [--label X] [--file X] [--json]
         twin sync   [-p PATTERN] [--label X] [--file X] [--all] [--dry-run]
                     [--quiet] [--skip-unavailable]
+                    [--force] [--skip-conflicts]
         twin add <path>            scaffold a new sync entry for a local path
         twin log    [-n N] [--json]  recent journal entries (default 20)
         twin doctor                check tools, renderers, and sync targets
@@ -33,6 +34,12 @@ module Twin
       FILE ARGUMENT:
         bare name (no /)  → matched by substring against sync-file names
         contains /        → resolved as path; file or directory both work
+
+      TARGET-SIDE CHANGES:
+        Before syncing, twin looks for files the target changed more recently
+        AND whose content differs, then asks once for the whole program.
+        --force           overwrite them without asking (for automation)
+        --skip-conflicts  leave them alone, sync everything else
 
       CONFIG:
         ~/.config/twin/config.yaml
@@ -149,6 +156,8 @@ module Twin
           puts "    #{j.path}#{conflict}"
           puts "      src #{src}"
           puts "      dst #{tgt}"
+          # Named, not hidden: these belong to the target on purpose.
+          puts "      own #{j.owned.join(', ')}" unless j.owned.nil? || j.owned.empty?
         end
       end
     end
@@ -171,7 +180,8 @@ module Twin
       results = programs.map do |p|
         sync_jobs(cfg, p, p.active_jobs,
                   dry_run: opts[:dry_run], quiet: opts[:quiet],
-                  skip_unavailable: opts[:skip_unavailable])
+                  skip_unavailable: opts[:skip_unavailable],
+                  force: opts[:force], skip_conflicts: opts[:skip_conflicts])
       end
       exit 1 unless results.all?
     end
@@ -179,7 +189,8 @@ module Twin
     # Sync the given jobs. Returns true when every attempted job succeeded.
     # quiet:            print only conflicts, errors, and jobs that changed something
     # skip_unavailable: skip jobs whose target is unmounted/unreachable instead of aborting
-    def sync_jobs(cfg, program, jobs, dry_run: false, quiet: false, skip_unavailable: false)
+    def sync_jobs(cfg, program, jobs, dry_run: false, quiet: false, skip_unavailable: false,
+                  force: false, skip_conflicts: false)
       jobs = jobs.select { |j| j.active == 1 }
       return true if jobs.empty?
 
@@ -199,17 +210,17 @@ module Twin
       end
       return true if jobs.empty?
 
-      conflicts = jobs.select(&:conflict)
-      unless conflicts.empty?
-        warn "warning: target is newer than source:"
-        conflicts.each { |j| warn "  ! #{j.path}" }
-        warn "continuing sync (--update skips newer files on target)."
-      end
+      # Decide about target-side changes BEFORE the first byte moves: a partly
+      # applied program is worse than none at all. resolve_conflicts returns
+      # false when the run must not happen.
+      force = resolve_conflicts(cfg, jobs, dry_run: dry_run, quiet: quiet,
+                                force: force, skip_conflicts: skip_conflicts)
+      return false if force == :abort
 
       header_printed = false
       all_ok = true
       jobs.each do |job|
-        success, output, transferred = Twin::Sync.run_job(cfg, job, dry_run: dry_run)
+        success, output, transferred = Twin::Sync.run_job(cfg, job, dry_run: dry_run, force: force)
         Twin::Journal.record(job, success: success, transferred: transferred, output: output) unless dry_run
         all_ok &&= success
         next if quiet && success && !transferred
@@ -223,6 +234,67 @@ module Twin
         warn "  error syncing #{job.path}" unless success
       end
       all_ok
+    end
+
+    # Settle what happens to files the target changed more recently, before any
+    # job runs. Returns true (overwrite them), false (leave them, --update keeps
+    # them) or :abort (sync nothing at all).
+    #
+    # The mtime pre-filter on each Job is coarse and fires often; only files
+    # whose content really differs reach the prompt. A prompt that cries wolf
+    # gets answered without reading it.
+    def resolve_conflicts(cfg, jobs, dry_run:, quiet:, force:, skip_conflicts:)
+      return true  if force
+      return false if skip_conflicts || dry_run
+
+      conflicts = jobs.flat_map { |j| Twin::Conflict.detect(cfg, j) }
+      return false if conflicts.empty?
+
+      report_conflicts(conflicts)
+
+      unless $stdin.tty? && $stdout.tty?
+        warn ""
+        warn "abort: target has changes of its own and there is no terminal to ask."
+        warn "       re-run with --force to overwrite them, or --skip-conflicts to keep them."
+        return :abort
+      end
+
+      loop do
+        print "\noverwrite these on the target and sync? [y]es / [d]iff / [n]o (abort) "
+        $stdout.flush
+        case $stdin.gets&.strip&.downcase
+        when "y", "yes"  then return true
+        when "n", "no", "", nil then puts "aborted — nothing was synced."; return :abort
+        when "d", "diff" then show_diffs(conflicts)
+        else puts "please answer y, d or n."
+        end
+      end
+    end
+
+    def report_conflicts(conflicts)
+      warn "target has changed since the last sync — #{conflicts.size} file(s) differ:"
+      conflicts.each do |c|
+        delta = c.age_delta
+        age   = delta ? " (target #{format_age(delta)} newer)" : ""
+        warn "  ! #{c.job.path == c.rel ? c.rel : File.join(c.job.path, c.rel)}#{age}"
+      end
+      warn "syncing would replace them with the source version."
+    end
+
+    def show_diffs(conflicts)
+      conflicts.each do |c|
+        puts
+        puts "── #{c.rel} " + "─" * [0, 60 - c.rel.length].max
+        puts Twin::Conflict.diff(c)
+      end
+    end
+
+    def format_age(seconds)
+      s = seconds.to_i.abs
+      return "#{s}s"           if s < 90
+      return "#{s / 60}m"      if s < 5400
+      return "#{s / 3600}h"    if s < 172_800
+      "#{s / 86_400}d"
     end
 
     # :ok, or a human-readable reason the target can't be synced right now.
@@ -374,11 +446,13 @@ module Twin
 
     def parse_sync_opts(args)
       opts = { show_all: false, label: nil, file: nil, pattern: nil, dry_run: false,
-               quiet: false, skip_unavailable: false }
+               quiet: false, skip_unavailable: false, force: false, skip_conflicts: false }
       OptionParser.new do |o|
         o.on("--all")          { opts[:show_all] = true }
         o.on("--label=L")      { |v| opts[:label] = v }
         o.on("--file=F")       { |v| opts[:file] = v }
+        o.on("--force")           { opts[:force] = true }
+        o.on("--skip-conflicts")  { opts[:skip_conflicts] = true }
         o.on("-p", "--pattern=P") { |v| opts[:pattern] = v }
         o.on("--dry-run")      { opts[:dry_run] = true }
         o.on("-q", "--quiet")  { opts[:quiet] = true }
