@@ -4,7 +4,7 @@ require "twin/version"
 Gem::Specification.new do |s|
   s.name        = "mark-twin"
   s.version     = Twin::VERSION
-  s.summary     = "Sync configuration folders between two Macs from self-documenting Markdown files"
+  s.summary     = "Sync configuration between machines, from self-documenting Markdown files"
   s.description = "twin reads sync-files (Markdown + YAML blocks) via grubber, " \
                   "groups them by program, and runs rsync. Interactive picker uses " \
                   "fzf with an apex Markdown preview."

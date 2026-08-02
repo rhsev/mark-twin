@@ -4,26 +4,56 @@
 [![Tests](https://github.com/rhsev/mark-twin/actions/workflows/test.yml/badge.svg)](https://github.com/rhsev/mark-twin/actions/workflows/test.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Sync configuration folders between two Macs from self-documenting Markdown files.
+Sync configuration between machines, from Markdown files that explain
+themselves.
 
-Sync entries are defined in Markdown files with YAML blocks — human-readable,
-self-documenting, and queryable via [grubber](https://github.com/rhsev/grubber).
-Selection is interactive via [fzf](https://github.com/junegunn/fzf), with a
-Markdown preview rendered by [apex](https://github.com/ttscoff/apex) and
-optional post-sync actions on the target via [mi.lan](https://github.com/rhsev/mi.lan).
+A sync-file is a normal Markdown document. The prose explains it to you — and
+to whatever assistant you point at the file later. The fenced YAML blocks are
+what twin acts on:
 
-## Why?
+````markdown
+---
+Active: 1
+Source: /Users/admin
+Target: admin@macbook:/Users/admin
+---
 
-Sync-definitions in Markdown + YAML are three things at once:
+## Fish Shell
 
-- **Human-readable.** Plain Markdown, no twin-specific syntax to learn. The
-  Markdown frame documents *why* a path is synced, not just what, so you can
-  read your own sync-files in a year and still understand them.
-- **Machine-readable.** The YAML blocks are queryable via grubber, so any tool
-  (twin, but also future ones) can act on the same source of truth.
-- **AI-writable.** LLMs handle Markdown + YAML well. You can ask an assistant to
-  add new entries or refactor existing ones, and the result stays valid for both
-  humans and grubber.
+Shell config, including completions and abbreviations. `local.fish` stays
+machine-specific — the laptop keeps its own.
+
+```yaml
+Program: Fish Shell
+Path: .config/fish
+Description: Fish Shell configuration
+Own: conf.d/local.fish
+```
+````
+
+`twin` then shows you what differs and syncs what you pick. Under the
+hood it is `rsync`; the point is the file above, which still tells you in a
+year *why* a path is synced, not just that it is.
+
+That is the whole idea, and for most entries it stays exactly that small. The
+rest of this README is long because twin does handle the awkward cases — files
+the other machine owns, both sides changed since last time, paths that differ
+per host — not because you need any of them on day one. Skip what you don't
+need.
+
+## Why Markdown
+
+- **You can read it later.** The reason a path is synced lives next to the
+  path, in prose, not in a comment you stopped writing after the third entry.
+- **Machines can read it too.** The YAML blocks are extracted by
+  [grubber](https://github.com/rhsev/grubber), so the same file can feed other
+  tools, not just twin.
+- **It stays editable by hand.** No generated state, no database. Add a block
+  in your editor and twin picks it up.
+- **And yes, ask your AI to write them.** Markdown with YAML blocks is exactly
+  what language models are good at. Show one an existing sync-file, describe
+  the next entry, and what comes back is valid for grubber and still readable
+  by you — which is the whole bargain of this format.
 
 ## Screenshots
 
@@ -37,22 +67,21 @@ compact preview of the relevant sync-file section, rendered by apex:
 
 ![Stage 2 — Fish Shell paths with apex preview](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_2_fish.png)
 
-## Installation
-
-### 1. Install grubber
-
-twin parses sync-files via [grubber](https://github.com/rhsev/grubber), a
-small Go binary. Download the latest release for your platform from
-[github.com/rhsev/grubber/releases](https://github.com/rhsev/grubber/releases)
-and put it somewhere in your `PATH` (e.g. `/usr/local/bin/grubber`).
-
-### 2. Install twin
+## Install
 
 ```bash
 gem install mark-twin
+brew install fzf
 ```
 
-Or from source:
+Plus [grubber](https://github.com/rhsev/grubber/releases), a small Go binary —
+download it and put it in your `PATH`. `rsync` ships with macOS.
+
+Optional: one of `apex`, `glow` or `bat` for the preview pane (tried in that
+order, `cat` if none are present). `twin doctor` reports what it found.
+
+<details>
+<summary>From source</summary>
 
 ```bash
 git clone https://github.com/rhsev/mark-twin.git
@@ -60,104 +89,180 @@ cd mark-twin
 gem build mark-twin.gemspec
 gem install ./mark-twin-*.gem
 ```
+</details>
 
-### 3. Other tools
+## Getting started
 
-Also required in `PATH`: `rsync` (preinstalled on macOS), `fzf`
-(`brew install fzf`). For the stage-2 preview, one of `apex`, `glow`,
-or `bat` is recommended (falls back in that order; `cat` if none are
-present).
+**1. Decide where the other side lives.** `Target:` takes either form, and
+neither is the special case:
 
-## Quickstart
+```yaml
+Target: admin@macbook:/Users/admin              # over ssh
+Target: /Volumes/macbook/Users/admin            # a mounted volume (SMB, NFS, …)
+```
 
-Twin assumes the target machine is reachable as a mounted volume (typically
-via SMB or NFS). The mount check is enforced before any sync.
+Over ssh you need key-based login — twin runs `ssh -o BatchMode=yes` and never
+prompts for a password, so set up `ssh-copy-id macbook` first. A mounted volume
+needs no keys but has to be mounted; twin checks before every sync. The
+[comparison below](#mounted-volume-or-ssh) covers the two differences that
+actually matter.
 
-1. **Pick a directory for sync-files** (anywhere; this example uses `~/Sync`):
+**2. Point twin at a folder for sync-files**, in `~/.config/twin/config.yaml`:
 
-   ```bash
-   mkdir -p ~/Sync
-   ```
+```yaml
+sync_dir: ~/Sync
 
-2. **Create the config** at `~/.config/twin/config.yaml`:
+global_excludes:
+  - .DS_Store
+  - .git/
+```
 
-   ```yaml
-   sync_dir: ~/Sync
-   global_excludes:
-     - .DS_Store
-     - .git/
-   ```
-
-3. **Drop a sync-file** into `~/Sync`. The simplest starting point is to copy
-   one of the [examples](examples/) and adapt the frontmatter:
-
-   ```bash
-   cp examples/home.md ~/Sync/
-   $EDITOR ~/Sync/home.md   # edit Source: and Target:
-   ```
-
-4. **Run twin**:
-
-   ```bash
-   twin
-   ```
-
-   Pick a program, then the paths to sync, hit Enter.
-
-## Usage
-
-Twin has two modes: an **interactive interface** (default — see screenshots
-above) and **CLI commands** for status checks and batch sync.
+**3. Write a sync-file**, or start from one of the [examples](examples/):
 
 ```bash
-twin                         # TUI — all programs across all sync-files
-twin home.md                 # TUI — one sync-file in sync_dir (by name)
-twin /abs/path/to/file.md    # TUI — any sync-file by absolute path
-twin ./relative/dir/         # TUI — all sync-files in a directory
+mkdir -p ~/Sync
+cp examples/home.md ~/Sync/
+$EDITOR ~/Sync/home.md      # adjust Source: and Target:
+```
+
+`twin add ~/.config/fish` does the same interactively, if you prefer prompts to
+an editor — it finds the matching sync-file, derives the relative path,
+suggests excludes for what it sees in the directory, and appends a block with a
+prose stub.
+
+**4. Look before you leap:**
+
+```bash
+twin status              # what differs
+twin sync --dry-run      # what a sync would do, without doing it
+twin                     # interactive: pick a program, pick paths, Enter
+```
+
+That is the whole loop. Everything below is detail you can come back for.
+
+## Everyday commands
+
+```bash
+twin                         # picker — all programs across all sync-files
+twin home.md                 # picker — one sync-file in sync_dir (by name)
+twin ./some/dir/             # picker — all sync-files in a directory
 twin list                    # plain listing
 twin status                  # listing with source/target mtimes
 twin sync -p grubber         # sync one program by name pattern
 twin sync --file=repos       # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
-twin sync --force            # overwrite target-side changes without asking
-twin sync --skip-conflicts   # keep target-side changes, sync everything else
 twin log                     # recent journal entries (-n N, --json)
-twin doctor                  # check tools, renderers, and sync targets
+twin doctor                  # check tools, renderers, and targets
 twin --help                  # show usage
 ```
 
-### Adding a sync entry
+A file argument without `/` is matched by substring against sync-file names in
+`sync_dir`; anything containing `/` is treated as a path, file or directory.
 
-`twin add <path>` scaffolds a new entry interactively, so the judgment calls
-of setting up a sync become prompts with defaults:
+Every job is journaled to `~/.local/state/twin/log.jsonl` — one JSON line with
+timestamp, program, path and outcome. `twin sync` exits non-zero if any job
+failed.
 
+## Sync-files
+
+One Markdown file per relationship. Frontmatter sets it up, YAML blocks define
+the individual paths. Frontmatter fields are merged into every block, so
+`Source:`/`Target:` are usually written once at the top — but a block may
+override them, which is how one file can serve several destinations.
+
+Blocks sharing a `Program` are grouped: they are selected together, synced
+together, and **run in the order they appear in the file**.
+
+### Field reference
+
+Field names are capitalised English. An unknown key is ignored silently and a
+missing `Active` counts as `0`, so a typo shows up as an entry that never syncs
+rather than as an error.
+
+| Field | Where | Meaning |
+|---|---|---|
+| `Program` | block | Group name; blocks sharing it sync together |
+| `Path` | block | Path relative to `Source` (file or directory) |
+| `Source` | either | Absolute base path on this machine |
+| `Target` | either | Absolute base path, or `user@host:/path` for ssh |
+| `Target-Path` | block | Path under `Target`, when it differs from `Path` |
+| `Active` | either | `1` syncs, `0` skips. Default `0` |
+| `Description` | block | Shown in listings and the picker |
+| `Label` | either | Free-text grouping, filterable via `--label` |
+| `Exclude` | block | Comma-separated paths that are not part of the sync |
+| `Own` | block | Comma-separated paths the **target** owns |
+| `Delete` | block | `true` mirrors deletions, with backups |
+| `Cmd` | block | Shell command, run only when bytes actually moved |
+| `Render` | block | `true` substitutes `{{tokens}}` instead of copying |
+
+### Exclude or Own?
+
+Both keep rsync away from a path and both take a comma-separated list
+(`Exclude: *.log, __pycache__/`). What differs is the meaning, and `twin status`
+reports them apart:
+
+- **`Exclude:`** — not part of this sync at all. Build artefacts, logs, caches,
+  `.git/`, a test script with no business on the other machine.
+- **`Own:`** — inside the sync scope, but the **target** owns it.
+  Machine-specific configuration the source must never clobber:
+  `conf.d/local.fish`, `lazy-lock.json`, a per-host credentials file.
+
+The distinction is documentation, not mechanism. Six months on, `Own:` still
+says "deliberate, the other machine maintains this", where the same entry sitting
+in `Exclude:` between `*.dwarf` and `.DS_Store` reads like noise you once
+filtered out.
+
+### Cmd: doing something after a sync
+
+`Cmd` runs a shell command once rsync has actually transferred bytes — a no-op
+sync runs nothing. Typically a `curl` to a local automation endpoint like
+[mi.lan](https://github.com/rhsev/mi.lan), or an `ssh host '…'` for remote
+targets (`Cmd` always runs locally).
+
+It belongs to a block rather than to the program, which is what you want when
+different paths need different follow-ups — reload nginx after its config,
+re-link binaries after `bin/`. For a **restart**, put the command in the
+**last** block: jobs run in file order, so a restart placed earlier brings the
+service back before the remaining paths are written. The same command repeated
+across blocks restarts repeatedly, for the same reason. One command, last block.
+
+### Delete: mirroring removals
+
+`Delete: true` adds `--delete`, so files removed from the source disappear on
+the target too. Deleted and overwritten files are moved to
+`<target>/.twin-backup/<timestamp>/` rather than destroyed — a safety net worth
+pruning occasionally. It applies to `Delete` jobs only.
+
+## Mounted volume or ssh
+
+Both are first-class. `twin status`, the picker, `Exclude`/`Own`, `Delete` and
+`Cmd` behave identically; remote paths are stat'ed in a single ssh round-trip
+per host, and an unreachable host shows as `?` instead of failing the scan.
+
+Two differences are real:
+
+|  | mounted volume | ssh |
+|---|---|---|
+| Setup | volume must be mounted | ssh key (`ssh-copy-id`) |
+| Before syncing | mount check | reachability check |
+| `Render: true` | supported | **not** supported |
+
+`Render` needs to read and write file contents on the target, which twin only
+does locally. Keep rendered files on mounted targets, or render locally and sync
+the result.
+
+Syncing is push-only in both cases: `Source:` is always this machine.
+
+```markdown
+---
+Active: 1
+Label: mini → server
+Source: /Volumes/lightning/Git/Website
+Target: ralf@server:/srv/www
+---
 ```
-$ twin add ~/.config/fish
-sync-file: home_macbook.md  (/Users/admin → /Volumes/macbook/Users/admin)
-Program name [fish]:
-Why is this synced? (one line of prose): Shell config incl. abbreviations.
-Description (short, for listings) [fish]: Fish Shell configuration
-Exclude (comma-separated) [.git/]:
-Mirror deletions on target (Delete: true)? (y/N) [n]:
-Post-sync Cmd (empty for none):
 
-added "fish" to home_macbook.md
-Run a dry-run now? (Y/n) [y]:
-```
-
-twin matches the path against the `Source:` roots of your sync-files (asking
-which to use when several match), derives `Path:` relative to that root,
-suggests excludes for what it finds in the directory (`.git/`,
-`node_modules/`, `.venv/`, …), refuses duplicates, and appends a Markdown
-block — prose stub included. If no sync-file covers the path, it offers to
-create one (frontmatter and all), which is also the quickest way to start
-syncing to a new SSH target.
-
-Every synced job is journaled to `~/.local/state/twin/log.jsonl` (one JSON
-line per job: timestamp, program, path, outcome). `twin log` shows the recent
-history; `twin sync` exits non-zero when any job failed.
-
-### When the target has changed too
+## When the target has changed too
 
 A sync has a direction: the source wins. But targets get edited — a quick fix
 made on the server at midnight, a config tweaked where it runs. Twin looks for
@@ -174,212 +279,45 @@ overwrite these on the target and sync? [y]es / [d]iff / [n]o (abort)
 `d` prints a unified diff per file, then asks again. `n` aborts the entire
 program — nothing is written, so you never end up with half a deploy applied.
 
-Two properties make this bearable in daily use:
+Two properties make this bearable day to day:
 
 - **Content, not timestamps.** A file that is merely newer on the target with
-  identical bytes is not a conflict, and does not ask. Sync a tree in both
-  directions and you accumulate dozens of those; a prompt that fires on them
-  gets answered without being read.
+  identical bytes is not a conflict and does not ask. Sync a tree in both
+  directions and you collect dozens of those; a prompt that fires on them gets
+  answered without being read.
 - **Directory mtimes are ignored.** Editing a file in place leaves its
   directory's mtime untouched, and `rsync -a` equalises those anyway. Twin asks
-  rsync what it would actually transfer instead of guessing from the directory.
+  rsync what it would actually transfer instead of guessing from a directory.
 
-Note that `twin status` is still mtime-based and cannot see an in-place edit.
-It is the cheap overview; `twin sync` is what decides.
+`twin status` is still mtime-based and cannot see an in-place edit. It is the
+cheap overview; `twin sync` is what decides.
 
-For automation, answer in advance: `--force` overwrites, `--skip-conflicts`
-leaves target-side changes alone and syncs the rest. Without a terminal and
-without either flag, a real conflict aborts the run with exit code 1 rather
-than picking an answer for you.
+## Automation
 
-### Unattended syncs
-
-For a scheduled run (launchd, cron), combine two flags:
+For a scheduled run (launchd, cron):
 
 ```bash
-twin sync --quiet --skip-unavailable
+twin sync --quiet --skip-unavailable --skip-conflicts
 ```
 
-`--quiet` prints only conflicts, errors, and jobs that actually changed
-something — a no-op run is silent. `--skip-unavailable` skips targets that
-are currently unmounted or unreachable instead of aborting, so a laptop that
-isn't docked doesn't turn into an error. Combined, the run produces output
-(and a non-zero exit) only when something genuinely needs attention, which is
-exactly what launchd's stdout/stderr logging wants; the journal still records
-every job.
+- `--quiet` — only conflicts, errors and jobs that changed something. A no-op
+  run is silent.
+- `--skip-unavailable` — a laptop that isn't docked is skipped, not an error.
+- `--skip-conflicts` — leave target-side changes alone and sync the rest.
+  Use `--force` instead to overwrite them.
 
-File argument resolution:
-
-- bare name (no `/`)  → looked up by substring in `sync_dir`
-- contains `/`        → resolved as path (absolute or relative); file or directory both work
-
-## Configuration
-
-`~/.config/twin/config.yaml`:
-
-```yaml
-sync_dir: /path/to/sync-files
-
-global_excludes:
-  - .DS_Store
-  - .git/
-
-# Optional preview rendering (apex):
-# apex_theme: default
-# apex_width: 80
-# apex_code_highlight: monokai
-# apex_code_highlight_theme: dark
-```
-
-Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`, `TWIN_HOST` (which host
-twin runs as — lets one config serve both machines).
-
-## Sync-files
-
-Each Markdown file represents one sync relationship. Frontmatter defines the
-relationship (Source/Target); YAML blocks define individual paths.
-
-See [examples/home.md](examples/home.md) and [examples/repos.md](examples/repos.md)
-for ready-to-adapt templates.
-
-Minimal example:
-
-````markdown
----
-Active: 1
-Label: mac-mini → macbook
-Source: /Users/admin
-Target: /Volumes/macbook/Users/admin
----
-
-## Fish Shell
-
-Configuration for the fish shell, including completions and abbreviations.
-
-```yaml
-Program: Fish Shell
-Path: .config/fish
-Description: Fish Shell configuration
-Own: conf.d/local.fish
-```
-````
-
-### Exclude or Own?
-
-Both keep rsync away from a path, and both take a comma-separated list
-(`Exclude: *.log, __pycache__/`). They differ in what they mean, and `twin
-status` reports them differently:
-
-- **`Exclude:`** — not part of this sync at all. Build artefacts, logs, caches,
-  `.git/`, a test script that has no business on the server.
-- **`Own:`** — inside the sync scope, but the **target** owns it. Machine-specific
-  configuration the source must never clobber: `conf.d/local.fish`,
-  `lazy-lock.json`, a per-host credentials file.
-
-The distinction is documentation, not mechanism. Six months later, `Own:` still
-says "this is deliberate, the other machine maintains it", where an `Exclude:`
-sitting between `*.dwarf` and `.DS_Store` reads like noise you once filtered out.
-
-Frontmatter fields (`Active`, `Label`, `Source`, `Target`) are merged into
-every block by grubber. Multiple blocks can share the same `Program` — twin
-groups them and treats the program as the unit of selection.
-
-### Field reference
-
-All field names are capitalised English. A key twin does not know is ignored
-silently, and a missing `Active` counts as `0` — so a typo shows up as an entry
-that never syncs rather than as an error.
-
-| Field | Where | Meaning |
-|---|---|---|
-| `Program` | block | Group name; blocks sharing it sync together |
-| `Path` | block | Path relative to `Source` (file or directory) |
-| `Source` | either | Absolute base path on this machine |
-| `Target` | either | Absolute base path, or `user@host:/path` for ssh |
-| `Target-Path` | block | Path under `Target`, when it differs from `Path` |
-| `Active` | either | `1` syncs, `0` skips. Default `0` |
-| `Description` | block | Shown in listings and the picker |
-| `Label` | either | Free-text grouping, filterable via `--label` |
-| `Exclude` | block | Comma-separated paths that are not part of the sync |
-| `Own` | block | Comma-separated paths the **target** owns (see above) |
-| `Delete` | block | `true` mirrors deletions, with backups |
-| `Cmd` | block | Shell command, run only when bytes actually moved |
-| `Render` | block | `true` substitutes `{{tokens}}` instead of copying |
-
-The optional `Cmd` field runs an arbitrary shell command after a successful
-sync — typically a `curl` to a local automation endpoint like
-[mi.lan](https://github.com/rhsev/mi.lan) to reload a program, restart a
-service, or notify another machine. The command only runs when rsync actually
-transferred bytes; no-op syncs skip it. See the Helix entry in
-[examples/home.md](examples/home.md).
-
-`Cmd` belongs to a block, not to the program, which is what you want when
-different paths need different follow-ups — reload nginx after its config,
-re-link binaries after `bin/`. It does mean a **restart** hook wants to sit in
-the **last** block of its program: jobs run in the order their blocks appear in
-the file, so a restart placed earlier brings the service back up before the
-remaining paths have been written, and the second restart attempt hits a server
-that is still coming up. Putting the same restart command in several blocks
-restarts several times for the same reason. One command, last block.
-
-The optional `Delete: true` field adds `--delete` to the rsync invocation,
-so files removed from the source are also removed on the target. Useful for
-directory syncs where the target should mirror the source exactly. As a
-safety net, deleted and overwritten files are moved to a per-run backup
-directory on the target (`<target>/.twin-backup/<timestamp>/`) instead of
-being destroyed — prune it occasionally.
-
-## SSH targets
-
-`Target:` accepts remote destinations in rsync notation — `user@host:/path` or
-`host:/path`. Everything else stays the same: the YAML block, excludes,
-`Delete:`, the `Cmd` hook.
-
-````markdown
----
-Active: 1
-Label: mini → server
-Source: /Volumes/lightning/Git/Website
-Target: ralf@server:/srv/www
----
-
-## Website
-
-Static site, deployed straight from the build directory.
-
-```yaml
-Program: website
-Path: public
-Description: static site
-Exclude: .git/
-Cmd: ssh ralf@server 'sudo systemctl reload caddy'
-```
-````
-
-Details:
-
-- **Push only.** `Source:` stays local; twin syncs *to* the remote host.
-- **Key-based auth required.** twin probes and stats hosts with
-  `ssh -o BatchMode=yes`, which never prompts for a password. Set up an SSH
-  key (`ssh-copy-id host`) first; `twin doctor` shows whether a host is
-  reachable.
-- **Status works remotely.** `twin status` and the picker stat all remote
-  paths of a host in a single ssh round-trip (macOS and Linux targets both
-  supported). An unreachable host shows as `?` instead of failing the scan.
-- **The mount check becomes a reachability check** — sync aborts if the host
-  doesn't answer.
-- **`Cmd` runs locally**, exactly as for mounted targets. To act on the
-  server, make the command an `ssh host '…'` call (see example above).
-- **`Render: true` is not supported** for remote targets (twin would have to
-  read and write remote file contents). Render locally or keep rendered files
-  on mounted targets.
+Without a terminal and without one of those two flags, a real conflict aborts
+the run with exit code 1 rather than picking an answer for you. Output and a
+non-zero exit therefore mean something genuinely needs attention — which is
+what launchd's logging wants. The journal records every job regardless.
 
 ## Templating
 
-Some configs differ per machine — a LaunchAgent plist that points at
-`/Volumes/lightning/…` on one Mac and `/Users/ralf/…` on another, a
-`settings.json` with a device-specific id. Those used to fall out of twin and
-get hand-maintained. Templating folds them back into one source of truth.
+*Skip this until you hit the problem it solves.*
+
+Some configs differ per machine — a LaunchAgent plist pointing at
+`/Volumes/lightning/…` on one Mac and `/Users/ralf/…` on another. Those used to
+fall out of twin and get hand-maintained.
 
 Define a host table in `~/.config/twin/config.yaml`:
 
@@ -410,9 +348,8 @@ The distinction matters: a file *written* to the mount (`/Volumes/ralf/…`) but
 
 `Render: true` turns a block from copy into *render*: twin reads the source as a
 template, substitutes `{{…}}` in its **content**, and writes the result only if
-it differs from the current target (so a `Cmd` hook fires only on a real change).
-`Target-Path:` overrides the target-side relative path when it differs from the
-source layout:
+it differs from the current target, so a `Cmd` hook fires only on a real change.
+`Target-Path:` overrides the target-side relative path:
 
 ````markdown
 ## LiveSync LaunchAgent
@@ -428,15 +365,35 @@ Cmd: curl -s http://mi.lan/livesync-reload
 ```
 ````
 
-`twin doctor` checks that every `{{token}}` across your sync-files resolves, and
-`twin status` compares rendered output by content (not mtime). Without a `hosts`
-table, templating is inert and literal-path sync-files behave exactly as before.
+`twin doctor` checks that every `{{token}}` resolves, and `twin status` compares
+rendered output by content rather than mtime. Without a `hosts` table,
+templating is inert and literal-path sync-files behave exactly as before.
+
+## Configuration
+
+`~/.config/twin/config.yaml`:
+
+```yaml
+sync_dir: /path/to/sync-files
+
+global_excludes:
+  - .DS_Store
+  - .git/
+
+# Optional preview rendering (apex):
+# apex_theme: default
+# apex_width: 80
+# apex_code_highlight: monokai
+# apex_code_highlight_theme: dark
+```
+
+Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`, `TWIN_HOST` (which host
+twin runs as — lets one config serve both machines).
 
 ## Design
 
-Sync instructions and context in one place — the same Markdown file holds
-both the `Path:` directives and the prose explaining them. No TUI framework:
-`fzf` does the interactive part, `apex` the rendering.
+Sync instructions and their context in one place. No TUI framework: `fzf` does
+the interactive part, `apex` the rendering, `rsync` the work.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model and internals.
 
