@@ -5,9 +5,24 @@ Gem::Specification.new do |s|
   s.name        = "mark-twin"
   s.version     = Twin::VERSION
   s.summary     = "Sync configuration between machines, from self-documenting Markdown files"
-  s.description = "twin reads sync-files (Markdown + YAML blocks) via grubber, " \
-                  "groups them by program, and runs rsync. Interactive picker uses " \
-                  "fzf with an apex Markdown preview."
+  s.description = <<~DESC
+    Keeping two machines' configuration aligned usually ends in a shell script
+    nobody dares touch, because the reasons behind it were never written down.
+
+    twin puts the reasons and the instructions in the same file. A sync-file is
+    ordinary Markdown: the prose explains why a path is synced, and fenced YAML
+    blocks say what to do. rsync does the copying.
+
+    It knows the awkward parts. Paths the other machine owns stay untouched and
+    are named as such, not buried among build artefacts. When both sides changed
+    since the last sync, twin shows a diff and asks before overwriting anything,
+    once for the whole group, so a half-applied deploy is not a state it can
+    leave you in. Targets are a local path, a mounted volume, or user@host:/path
+    over ssh, with no difference in how they are used.
+
+    Interactive selection runs through fzf with a rendered Markdown preview; the
+    same sync-files drive scriptable status, dry-run and sync commands.
+  DESC
   s.authors     = ["Ralf Hülsmann"]
   s.email       = ["huelsmann@sevelen.net"]
   s.homepage    = "https://github.com/rhsev/mark-twin"
@@ -15,8 +30,10 @@ Gem::Specification.new do |s|
   s.required_ruby_version = ">= 3.1"
 
   s.metadata = {
-    "source_code_uri" => "https://github.com/rhsev/mark-twin",
-    "bug_tracker_uri" => "https://github.com/rhsev/mark-twin/issues",
+    "source_code_uri"   => "https://github.com/rhsev/mark-twin",
+    "bug_tracker_uri"   => "https://github.com/rhsev/mark-twin/issues",
+    "changelog_uri"     => "https://github.com/rhsev/mark-twin/releases",
+    "documentation_uri" => "https://github.com/rhsev/mark-twin#readme",
   }
 
   s.post_install_message = <<~MSG
