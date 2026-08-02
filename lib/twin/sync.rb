@@ -18,6 +18,29 @@ module Twin
       output.lines.any? { |l| ITEMIZE_CHANGE.match?(l) }
     end
 
+    # rsync's own noise: the header, the blank line, and the transfer summary.
+    # Everything twin adds itself (cmd output, "skipped:", error text) survives,
+    # as does any itemize line describing an actual change.
+    # Spaces are escaped on purpose: /x ignores literal whitespace, and these
+    # patterns are all multi-word.
+    RSYNC_NOISE = /
+      \A(sending|receiving)\ incremental\ file\ list\z |
+      \Acreated\ directory\  |
+      \Asent\ [\d,]+\ bytes |
+      \Atotal\ size\ is\ [\d,]+
+    /x
+
+    # Drop everything from an rsync run that does not describe a change.
+    # An itemize line whose first column is "." moved no data — permissions or
+    # a timestamp on an existing file — and is exactly the material that made
+    # the interesting lines hard to find.
+    def summarize(output)
+      output.lines.reject do |line|
+        l = line.rstrip
+        l.empty? || RSYNC_NOISE.match?(l) || (l.start_with?(".") && l =~ /\A\.[fdLDS]/)
+      end.join
+    end
+
     # True if the path lives on a mounted volume other than the root filesystem.
     # Walks up parents until it finds a mount point (different device than parent)
     # or hits "/" (path is on the root volume, not externally mounted).

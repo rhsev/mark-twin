@@ -24,12 +24,13 @@ module Twin
         twin list   [--all] [--label X] [--file X] [--json]
         twin status [--all] [--label X] [--file X] [--json]
         twin sync   [-p PATTERN] [--label X] [--file X] [--all] [--dry-run]
-                    [--quiet] [--skip-unavailable]
+                    [--quiet] [-v] [--skip-unavailable]
                     [--force] [--skip-conflicts]
         twin add <path>            scaffold a new sync entry for a local path
         twin log    [-n N] [--json]  recent journal entries (default 20)
         twin doctor                check tools, renderers, and sync targets
         twin --help                show this message
+        twin --version             show the running version
 
       FILE ARGUMENT:
         bare name (no /)  → matched by substring against sync-file names
@@ -63,6 +64,8 @@ module Twin
       when "doctor"   then cmd_doctor(cfg)
       when "-h", "--help", "help"
         puts USAGE
+      when "-V", "--version", "version"
+        puts "twin #{Twin::VERSION}"
       when /\A-/
         warn "unknown option: #{first}"
         warn "Run 'twin --help' for usage."
@@ -79,6 +82,17 @@ module Twin
     # ── picker → sync ──────────────────────────────────────────────────────────
 
     def pick_and_sync(cfg, file:)
+      # fzf without a terminal does not fail — it waits, silently, for input
+      # that will never come. Every unattended caller lands here: cron,
+      # `ssh host twin …`, an agent running commands. Say so and point at the
+      # command that does work.
+      unless $stdin.tty? && $stdout.tty?
+        warn "twin: the picker needs a terminal."
+        warn "      use `twin sync#{file ? " --file=#{file}" : ""}` for an unattended run" \
+             " (add --dry-run to preview)."
+        exit 1
+      end
+
       programs = Scanner.load_programs(cfg, file: file, show_all: false)
       if programs.empty?
         warn "no active programs found#{" in #{file}" if file}"
@@ -181,16 +195,18 @@ module Twin
         sync_jobs(cfg, p, p.active_jobs,
                   dry_run: opts[:dry_run], quiet: opts[:quiet],
                   skip_unavailable: opts[:skip_unavailable],
-                  force: opts[:force], skip_conflicts: opts[:skip_conflicts])
+                  force: opts[:force], skip_conflicts: opts[:skip_conflicts],
+                  verbose: opts[:verbose])
       end
       exit 1 unless results.all?
     end
 
     # Sync the given jobs. Returns true when every attempted job succeeded.
     # quiet:            print only conflicts, errors, and jobs that changed something
+    # verbose:          print rsync's full output instead of just the changes
     # skip_unavailable: skip jobs whose target is unmounted/unreachable instead of aborting
     def sync_jobs(cfg, program, jobs, dry_run: false, quiet: false, skip_unavailable: false,
-                  force: false, skip_conflicts: false)
+                  force: false, skip_conflicts: false, verbose: false)
       jobs = jobs.select { |j| j.active == 1 }
       return true if jobs.empty?
 
@@ -230,7 +246,8 @@ module Twin
           header_printed = true
         end
         puts "  • #{job.path}"
-        puts output.gsub(/^/, "    ") if output && !output.strip.empty?
+        shown = verbose || !success ? output : Twin::Sync.summarize(output.to_s)
+        puts shown.gsub(/^/, "    ") if shown && !shown.strip.empty?
         warn "  error syncing #{job.path}" unless success
       end
       all_ok
@@ -353,6 +370,11 @@ module Twin
     def cmd_doctor(cfg)
       ok = true
 
+      # First line, because "which version am I actually running" is the
+      # question behind a surprising number of the others.
+      puts "twin #{Twin::VERSION}"
+      puts
+
       puts "Tools"
       %w[grubber rsync fzf].each do |bin|
         if tool_available?(bin)
@@ -446,11 +468,13 @@ module Twin
 
     def parse_sync_opts(args)
       opts = { show_all: false, label: nil, file: nil, pattern: nil, dry_run: false,
-               quiet: false, skip_unavailable: false, force: false, skip_conflicts: false }
+               quiet: false, skip_unavailable: false, force: false, skip_conflicts: false,
+               verbose: false }
       OptionParser.new do |o|
         o.on("--all")          { opts[:show_all] = true }
         o.on("--label=L")      { |v| opts[:label] = v }
         o.on("--file=F")       { |v| opts[:file] = v }
+        o.on("-v", "--verbose")   { opts[:verbose] = true }
         o.on("--force")           { opts[:force] = true }
         o.on("--skip-conflicts")  { opts[:skip_conflicts] = true }
         o.on("-p", "--pattern=P") { |v| opts[:pattern] = v }

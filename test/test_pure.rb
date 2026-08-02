@@ -1169,3 +1169,60 @@ class TestConflictContent < Minitest::Test
     end
   end
 end
+
+class TestSummarizeOutput < Minitest::Test
+  def full
+    <<~OUT
+      sending incremental file list
+      .d..tp..... ./
+      *deleting   obsolete.rb
+      >f+++++++++ added.rb
+      >f.s....... changed.rb
+      .f...p..... untouched.rb
+
+      sent 119 bytes  received 40 bytes  318.00 bytes/sec
+      total size is 14  speedup is 0.09 (DRY RUN)
+    OUT
+  end
+
+  def test_keeps_only_real_changes
+    assert_equal [
+      "*deleting   obsolete.rb",
+      ">f+++++++++ added.rb",
+      ">f.s....... changed.rb",
+    ], Twin::Sync.summarize(full).lines.map(&:rstrip)
+  end
+
+  def test_drops_the_header_and_summary
+    out = Twin::Sync.summarize(full)
+    refute_includes out, "incremental file list"
+    refute_includes out, "sent 119 bytes"
+    refute_includes out, "total size is"
+  end
+
+  def test_drops_non_transfer_itemize_lines
+    out = Twin::Sync.summarize(full)
+    refute_includes out, "untouched.rb"   # .f...p — permissions only
+    refute_includes out, ".d..tp"         # directory timestamps
+  end
+
+  def test_keeps_twins_own_lines
+    out = Twin::Sync.summarize("sending incremental file list\ncmd: curl -sf http://x/reload\nhook ran\n")
+    assert_includes out, "cmd: curl"
+    assert_includes out, "hook ran"
+  end
+
+  def test_keeps_the_skipped_note
+    out = Twin::Sync.summarize("sending incremental file list\n\nskipped: target is newer, source not synced\n")
+    assert_includes out, "skipped: target is newer"
+  end
+
+  def test_no_op_summarizes_to_nothing
+    out = Twin::Sync.summarize("sending incremental file list\n\nsent 63 bytes  received 12 bytes  150.00 bytes/sec\ntotal size is 4,001  speedup is 53.35\n")
+    assert_equal "", out
+  end
+
+  def test_created_directory_is_noise
+    refute_includes Twin::Sync.summarize("created directory /tgt/new\n>f+++++++++ a.rb\n"), "created directory"
+  end
+end

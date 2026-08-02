@@ -151,13 +151,21 @@ twin status                  # listing with source/target mtimes
 twin sync -p grubber         # sync one program by name pattern
 twin sync --file=repos       # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
+twin sync -v                 # rsync's full output instead of just the changes
 twin log                     # recent journal entries (-n N, --json)
 twin doctor                  # check tools, renderers, and targets
+twin --version               # which twin is actually running
 twin --help                  # show usage
 ```
 
 A file argument without `/` is matched by substring against sync-file names in
 `sync_dir`; anything containing `/` is treated as a path, file or directory.
+
+By default a sync prints only what changed — the lines below, plus anything a
+`Cmd` produced and any error. `-v` adds rsync's headers and transfer summaries
+back. The bare `twin` picker needs a terminal and says so instead of waiting
+when there is none, so cron jobs and `ssh host twin …` fail with a usable
+message rather than hanging.
 
 Every job is journaled to `~/.local/state/twin/log.jsonl` — one JSON line with
 timestamp, program, path and outcome. `twin sync` exits non-zero if any job
@@ -178,10 +186,14 @@ terse. The first two characters are what matter:
 | `*deleting` | removed on the target (`Delete: true` jobs) |
 
 Two rules cover most of it: a leading `>` means data would move and a leading
-`.` means it would not, and among the flags `s` is the one that proves content
-changed. A dry-run full of `.f...p.....` lines is a no-op wearing a costume;
-one full of `>f..t......` lines is twin re-stamping files it need not have
-touched, which is normal after syncing a tree in both directions.
+`.` means it would not, and among the flags `s` is the one that proves the
+content changed rather than just a timestamp.
+
+Only the `>` and `*deleting` lines appear by default — the `.` ones are what
+`-v` adds back, along with rsync's headers and byte counts. So a job that
+prints nothing under its name moved nothing, and a run full of `>f..t......`
+lines is twin re-stamping files whose contents already match, which is normal
+after syncing a tree in both directions.
 
 ## Sync-files
 
