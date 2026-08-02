@@ -119,6 +119,25 @@ class TestScannerGrouping < Minitest::Test
     assert_equal ["grubber", "grubber"], programs.map(&:name)
     assert_equal ["home.md", "repos.md"], programs.map(&:sync_file).sort
   end
+
+  # Sync-files depend on this: a Cmd that restarts a service goes in the last
+  # block so it fires once every path is in place. Regrouping the jobs would
+  # restart against half-written state and report success while doing it.
+  def test_job_order_follows_document_order
+    jobs = [
+      make("dylan", "server.rb"), make("dylan", "lib"),
+      make("other", "elsewhere"),
+      make("dylan", "plugins"),   make("dylan", "config"),
+    ]
+    dylan = Twin::Scanner.group(jobs).find { |p| p.name == "dylan" }
+    assert_equal %w[server.rb lib plugins config], dylan.jobs.map(&:path)
+    assert_equal %w[server.rb lib plugins config], dylan.active_jobs.map(&:path)
+  end
+
+  def test_program_order_follows_first_appearance
+    jobs = [make("B", "x"), make("A", "y"), make("B", "z")]
+    assert_equal %w[B A], Twin::Scanner.group(jobs).map(&:name)
+  end
 end
 
 class TestPickerDelta < Minitest::Test

@@ -313,6 +313,15 @@ service, or notify another machine. The command only runs when rsync actually
 transferred bytes; no-op syncs skip it. See the Helix entry in
 [examples/home.md](examples/home.md).
 
+`Cmd` belongs to a block, not to the program, which is what you want when
+different paths need different follow-ups — reload nginx after its config,
+re-link binaries after `bin/`. It does mean a **restart** hook wants to sit in
+the **last** block of its program: jobs run in the order their blocks appear in
+the file, so a restart placed earlier brings the service back up before the
+remaining paths have been written, and the second restart attempt hits a server
+that is still coming up. Putting the same restart command in several blocks
+restarts several times for the same reason. One command, last block.
+
 The optional `Delete: true` field adds `--delete` to the rsync invocation,
 so files removed from the source are also removed on the target. Useful for
 directory syncs where the target should mirror the source exactly. As a

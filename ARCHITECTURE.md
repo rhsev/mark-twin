@@ -76,6 +76,22 @@ name, jobs
 `Program#status` aggregates jobs (worst state wins). Selection in the picker
 operates on Programs, not individual Jobs.
 
+**Job order is part of the contract.** Jobs of a Program run in the order their
+YAML blocks appear in the sync-file. Sync-files rely on this — a `Cmd` that
+restarts a service belongs in the last block, so it fires after every path is in
+place. Reorder the jobs and a deploy restarts against half-written state,
+without any error to show for it.
+
+The order is guaranteed at both ends of the pipeline, not merely observed:
+
+- grubber emits records in document order — first block, first record — for all
+  three output formats, pinned by its own `TestBlockOrderFollowsDocument`
+  across `Extract` and `StreamJSONL`.
+- twin preserves it through `filter_map` and `group_by` (insertion order per
+  key), pinned by `test_job_order_follows_document_order`.
+
+Neither side may quietly sort.
+
 ## Configuration
 
 `~/.config/twin/config.yaml`:
