@@ -6,19 +6,14 @@ Gem::Specification.new do |s|
   s.version     = Twin::VERSION
   s.summary     = "Sync configuration between Macs and any ssh host, from self-documenting Markdown files"
   s.description = <<~DESC
-    Keeping two machines' configuration aligned usually ends in a shell script
-    nobody dares touch, because the reasons behind it were never written down.
+    twin helps keep two machines' configuration aligned.
 
-    twin puts the reasons and the instructions in the same file. A sync-file is
-    ordinary Markdown: the prose explains why a path is synced, and fenced YAML
-    blocks say what to do. rsync does the copying.
+    A sync-file is just Markdown: the prose says why a path is synced, and
+    fenced YAML blocks define what to do. rsync does the copying.
 
-    It knows the awkward parts. Paths the other machine owns stay untouched and
-    are named as such, not buried among build artefacts. When both sides changed
-    since the last sync, twin shows a diff and asks before overwriting anything,
-    once for the whole group, so a half-applied deploy is not a state it can
-    leave you in. Targets are a local path, a mounted volume, or user@host:/path
-    over ssh, with no difference in how they are used.
+    When both sides changed since the last sync, twin shows a diff and asks
+    before overwriting. A target is a local path, a mounted volume, or
+    user@host:/path over ssh, and twin treats all three the same.
 
     Interactive selection runs through fzf with a rendered Markdown preview; the
     same sync-files drive scriptable status, dry-run and sync commands.
