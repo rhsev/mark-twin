@@ -4,7 +4,7 @@ require "twin/version"
 Gem::Specification.new do |s|
   s.name        = "mark-twin"
   s.version     = Twin::VERSION
-  s.summary     = "Sync configuration between machines, from self-documenting Markdown files"
+  s.summary     = "Sync configuration between Macs and any ssh host, from self-documenting Markdown files"
   s.description = <<~DESC
     Keeping two machines' configuration aligned usually ends in a shell script
     nobody dares touch, because the reasons behind it were never written down.

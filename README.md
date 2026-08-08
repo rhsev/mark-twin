@@ -4,12 +4,11 @@
 [![Tests](https://github.com/rhsev/mark-twin/actions/workflows/test.yml/badge.svg)](https://github.com/rhsev/mark-twin/actions/workflows/test.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Sync configuration between machines, from Markdown files that explain
-themselves.
+Sync configuration between Macs (or to any host you can reach over ssh) from
+self-documenting Markdown files.
 
-A sync-file is a normal Markdown document. The prose explains it to you — and
-to whatever assistant you point at the file later. The fenced YAML blocks are
-what twin acts on:
+A sync-file is a normal Markdown document. The prose is for you, or for an AI
+assistant. twin only uses the fenced YAML blocks:
 
 ````markdown
 ---
@@ -21,7 +20,7 @@ Target: admin@macbook:/Users/admin
 ## Fish Shell
 
 Shell config, including completions and abbreviations. `local.fish` stays
-machine-specific — the laptop keeps its own.
+machine-specific, the MacBook keeps its own.
 
 ```yaml
 Program: Fish Shell
@@ -31,29 +30,27 @@ Own: conf.d/local.fish
 ```
 ````
 
-`twin` then shows you what differs and syncs what you pick. Under the
-hood it is `rsync`; the point is the file above, which still tells you in a
-year *why* a path is synced, not just that it is.
+`twin` shows you what differs and syncs what you choose. At its core, it's just
+`rsync`, but a year later the file still tells you *why* you did it that way.
 
-That is the whole idea, and for most entries it stays exactly that small. The
-rest of this README is long because twin does handle the awkward cases — files
-the other machine owns, both sides changed since last time, paths that differ
-per host — not because you need any of them on day one. Skip what you don't
-need.
+That is the whole idea, and for most entries it stays as small as the excerpt
+above. The rest of this README is long because twin also covers more complex
+cases: files that are specific to the other computer, files that have changed
+on both sides since the last sync, and paths that differ per host.
 
 ## Why Markdown
 
-- **You can read it later.** The reason a path is synced lives next to the
-  path, in prose, not in a comment you stopped writing after the third entry.
+- **You can read it later.** The reason a path is synced sits next to the
+  path, in prose.
 - **Machines can read it too.** The YAML blocks are extracted by
   [grubber](https://github.com/rhsev/grubber), so the same file can feed other
   tools, not just twin.
 - **It stays editable by hand.** No generated state, no database. Add a block
   in your editor and twin picks it up.
-- **And yes, ask your AI to write them.** Markdown with YAML blocks is exactly
-  what language models are good at. Show one an existing sync-file, describe
-  the next entry, and what comes back is valid for grubber and still readable
-  by you — which is the whole bargain of this format.
+- **Ask your AI to help you write it.** Markdown with YAML blocks is what
+  language models are good at. Show this README and an existing sync-file,
+  describe the next entry, and what comes back is valid for grubber and still
+  readable by you.
 
 ## Screenshots
 
@@ -93,7 +90,7 @@ gem install ./mark-twin-*.gem
 
 ## Getting started
 
-**1. Decide where the other side lives.** `Target:` takes either form, and
+**1. Choose ssh or a mounted volume.** `Target:` takes either form, and
 neither is the special case:
 
 ```yaml
@@ -130,7 +127,7 @@ an editor — it finds the matching sync-file, derives the relative path,
 suggests excludes for what it sees in the directory, and appends a block with a
 prose stub.
 
-**4. Look before you leap:**
+**4. Check first:**
 
 ```bash
 twin status              # what differs
@@ -241,7 +238,7 @@ reports them apart:
 
 The distinction is documentation, not mechanism. Six months on, `Own:` still
 says "deliberate, the other machine maintains this", where the same entry sitting
-in `Exclude:` between `*.dwarf` and `.DS_Store` reads like noise you once
+in `Exclude:` between `*.dwarf` and `.DS_Store` is something you once
 filtered out.
 
 ### Cmd: doing something after a sync
