@@ -5,7 +5,7 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Sync configuration between Macs (or to any host you can reach over ssh) from
-self-documenting Markdown files.
+self-documenting Markdown files. Designed for informed, interactive syncing.
 
 A sync-file is a normal Markdown document. The prose is for you, or for an AI
 assistant. twin only uses the fenced YAML blocks:
@@ -30,8 +30,11 @@ Own: conf.d/local.fish
 ```
 ````
 
-`twin` shows you what differs and syncs what you choose. At its core, it's just
-`rsync`, but a year later the file still tells you *why* you did it that way.
+twin runs when you ask, not in the background. It syncs what is unambiguous;
+where the target has changes of its own, it stops and asks, diff in hand
+(verified against content, never guessed from timestamps). At its core it's
+just `rsync`, but a year later the file still tells you *why* you did it that
+way.
 
 That is the whole idea, and for most entries it stays as small as the excerpt
 above. The rest of this README is long because twin also covers more complex
@@ -62,7 +65,7 @@ paths underneath:
 Stage 2 — multi-select over the paths of one program. The right pane shows a
 compact preview of the relevant sync-file section, rendered by apex:
 
-![Stage 2 — Fish Shell paths with apex preview](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_2_fish.png)
+![Stage 2 — a rendered LaunchAgent entry with apex preview](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_2_livesync.png)
 
 ## Install
 
@@ -144,13 +147,13 @@ twin                         # picker — all programs across all sync-files
 twin home.md                 # picker — one sync-file in sync_dir (by name)
 twin ./some/dir/             # picker — all sync-files in a directory
 twin list                    # plain listing
-twin status                  # listing with source/target mtimes
+twin status                  # what a sync would change, content-verified
 twin sync -p grubber         # sync one program by name pattern
 twin sync --file=repos       # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
 twin sync -v                 # rsync's full output instead of just the changes
 twin log                     # recent journal entries (-n N, --json)
-twin doctor                  # check tools, renderers, and targets
+twin doctor                  # check tools, renderers, targets, remote hosts
 twin --version               # which twin is actually running
 twin --help                  # show usage
 ```
@@ -265,8 +268,18 @@ pruning occasionally. It applies to `Delete` jobs only.
 ## Mounted volume or ssh
 
 Both are first-class. `twin status`, the picker, `Exclude`/`Own`, `Delete` and
-`Cmd` behave identically; remote paths are stat'ed in a single ssh round-trip
-per host, and an unreachable host shows as `?` instead of failing the scan.
+`Cmd` behave identically; remote paths are stat'ed (and, where timestamps
+disagree, checksummed via `md5`/`md5sum`) in batched ssh round-trips per host,
+and an unreachable host shows as `?` instead of failing the scan.
+
+The remote side needs `rsync` and `/bin/sh`; `stat` (or `date -r`) and
+`md5`/`md5sum` improve status from there, and `twin doctor` probes a host for
+all of them before the first sync fails halfway. No particular login shell is
+required — twin drives the far side through `/bin/sh` explicitly. That matters
+more than it sounds: until 0.4.5 the stat script went to whatever shell the
+account uses, so a host with fish (or any other non-POSIX shell) reported
+every path as unreachable. It looked exactly like a machine being switched
+off, which is why it went unnoticed for a while.
 
 Two differences are real:
 
@@ -361,8 +374,11 @@ Two properties make this bearable day to day:
   directory's mtime untouched, and `rsync -a` equalises those anyway. Twin asks
   rsync what it would actually transfer instead of guessing from a directory.
 
-`twin status` is still mtime-based and cannot see an in-place edit. It is the
-cheap overview; `twin sync` is what decides.
+`twin status` gives the same verdict without syncing: it runs the dry-runs per
+entry and reports what would flow, what merely differs in timestamp, and what
+changed on the target. Only the picker stays mtime-blind for directory entries
+— it marks them `∘` (unverified) rather than guessing, because the dry-runs
+would make it slow to open.
 
 ## Automation
 

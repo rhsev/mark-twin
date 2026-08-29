@@ -1,6 +1,13 @@
-# Templating — Implementation Spec (IDEAS #1)
+# Templating — Implementation Spec
 
 Status: **implemented & verified** (both layers, end-to-end through grubber).
+**In production since 2026-08-25** — until that day the mechanism existed but
+no sync-file used it. First two consumers: `grubber-config.yaml` and
+`adrem-config.yml` (`Automation/sync/templates/`, rendered into the MacBook's
+`~/.config/…` via `home_macbook.md`). Both had been hand-kept per machine, the
+MacBook's copies existing nowhere else; the deletion round-trip was tested
+(remove on target → status `!` / `dst (not found)` → sync → back and working).
+Layer A (path fields) is still unused.
 Module `lib/twin/template.rb`; touches config/scanner/sync/cli. Scope of first
 round: path-field substitution + render-then-place content rendering.
 
@@ -81,7 +88,9 @@ hosts:
 
 - `mount` is the only mount assumption: a single prefix, valid because the SMB
   share *is* the home dir (`/Volumes/ralf` == book's `/Users/ralf`). It scales
-  to a third machine without duplicating sync-files (#7).
+  to a third machine without duplicating sync-files — a concern retired
+  2026-08-25, since no duplication ever appeared. The table is what a future
+  `Render-For:` would key into.
 - New `Config` accessors: `hosts`, `host`, `target`. Add a resolver that, given
   source+target host names, produces the flat var map
   `{ "src.home" => …, "dst.home" => …, "dst.mount" => … }`.

@@ -14,6 +14,10 @@ module Twin
       source_newer:   "→",
       target_newer:   "←",
       in_sync:        "✓",
+      # Directory jobs in the picker: their mtimes prove nothing, and the
+      # dry-run that would prove something is too slow for a picker to open
+      # with. No claim instead of a wrong one — `twin status` has the verdict.
+      unverified:     "∘",
       missing_target: "!",
       missing_source: "!",
       both_missing:   "✗",
@@ -25,6 +29,7 @@ module Twin
       source_newer:   "\e[33m",   # yellow
       target_newer:   "\e[36m",   # cyan
       in_sync:        "\e[32m",   # green
+      unverified:     "\e[2m",    # dim
       missing_target: "\e[31m",   # red
       missing_source: "\e[31m",   # red
       both_missing:   "\e[31m",   # red
@@ -91,8 +96,7 @@ module Twin
 
       rows = jobs.each_with_index.map do |j, i|
         icon  = STATUS_ICONS[j.status] || "?"
-        delta = format_delta(j.source_mtime, j.target_mtime)
-        line  = "#{icon}  #{j.path.ljust(path_width)}  #{delta}"
+        line  = "#{icon}  #{j.path.ljust(path_width)}  #{job_delta(j)}"
         "#{i}\t#{colorize(j.status, line)}"
       end
 
@@ -186,12 +190,17 @@ module Twin
 
       body = program.jobs.map do |j|
         icon  = STATUS_ICONS[j.status] || "?"
-        delta = format_delta(j.source_mtime, j.target_mtime)
-        line  = "    #{icon}  #{j.path.ljust(path_width)}  #{delta}"
+        line  = "    #{icon}  #{j.path.ljust(path_width)}  #{job_delta(j)}"
         colorize(j.status, line)
       end
 
       ([header] + body).join("\n")
+    end
+
+    # A directory's mtime delta would mislead (it moves on every sync), so
+    # directory jobs show none.
+    def job_delta(job)
+      job.directory ? "" : format_delta(job.source_mtime, job.target_mtime)
     end
 
     def format_delta(sm, tm)

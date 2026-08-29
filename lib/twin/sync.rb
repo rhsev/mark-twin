@@ -130,6 +130,9 @@ module Twin
 
       xfr = !dry_run && transferred?(output)
 
+      # conflict is content-verified by the scanner and only ever set on file
+      # jobs — a directory's mtime says nothing, so directory jobs surface
+      # target-side changes through the pre-run prompt instead.
       if job.conflict && !xfr && !dry_run && !force
         output += "\nskipped: target is newer, source not synced"
       end

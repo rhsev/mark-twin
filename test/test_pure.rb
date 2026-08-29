@@ -55,6 +55,45 @@ class TestJobStatus < Minitest::Test
     now = Time.now
     assert_equal :target_newer, job(source_mtime: now - 3600, target_mtime: now).status
   end
+
+  def test_content_equal_overrides_mtime_drift
+    now = Time.now
+    assert_equal :in_sync,
+                 job(source_mtime: now - 3600, target_mtime: now, content_equal: true).status
+  end
+
+  # Directory jobs carry no mtime verdict — without a drift result the honest
+  # answer is "not checked", never a guess from directory mtimes.
+  def test_directory_without_drift_is_unverified
+    now = Time.now
+    assert_equal :unverified,
+                 job(directory: true, source_mtime: now, target_mtime: now - 3600).status
+  end
+
+  def drift(pending: [], time_only: [], conflicts: [])
+    Twin::Conflict::Drift.new(pending: pending, time_only: time_only, conflicts: conflicts)
+  end
+
+  def test_directory_drift_in_sync
+    assert_equal :in_sync, job(directory: true, drift: drift).status
+  end
+
+  def test_directory_drift_time_only_is_in_sync
+    assert_equal :in_sync, job(directory: true, drift: drift(time_only: ["a"])).status
+  end
+
+  def test_directory_drift_pending_is_source_newer
+    assert_equal :source_newer, job(directory: true, drift: drift(pending: ["a"])).status
+  end
+
+  def test_directory_drift_conflict_wins
+    d = drift(pending: ["a"], conflicts: [:entry])
+    assert_equal :target_newer, job(directory: true, drift: d).status
+  end
+
+  def test_directory_missing_target_reported_before_drift
+    assert_equal :missing_target, job(directory: true, target_exists: false).status
+  end
 end
 
 class TestProgramAggregation < Minitest::Test
@@ -88,6 +127,17 @@ class TestProgramAggregation < Minitest::Test
     inactive = Twin::Job.new(**active.to_h.merge(active: 0))
     p = Twin::Program.new(name: "X", jobs: [active, inactive])
     assert_equal 1, p.active_jobs.size
+  end
+
+  # :unverified must rank in the aggregation — a forgotten entry would make
+  # `find` miss and the fallback report :in_sync, a false green.
+  def test_unverified_aggregates_below_problems_above_in_sync
+    now = Time.now
+    unverified = Twin::Job.new(**job(sm: nil, tm: nil).to_h.merge(directory: true))
+    assert_equal :unverified,
+                 Twin::Program.new(name: "X", jobs: [job(sm: now, tm: now), unverified]).status
+    assert_equal :missing_source,
+                 Twin::Program.new(name: "X", jobs: [unverified, job(src: false)]).status
   end
 end
 
@@ -211,28 +261,54 @@ class TestScannerBuildJob < Minitest::Test
     assert_equal "curl http://mi.lan/reload", job.cmd
   end
 
-  def conflict_for(target_offset)
+  def file_job_for(target_offset, src_content: "x", tgt_content: "y")
     Dir.mktmpdir do |dir|
       src = File.join(dir, "src")
       tgt = File.join(dir, "tgt")
       FileUtils.mkdir_p(src)
       FileUtils.mkdir_p(tgt)
       now = Time.now
-      File.write(File.join(src, "a"), "x")
-      File.write(File.join(tgt, "a"), "x")
+      File.write(File.join(src, "a"), src_content)
+      File.write(File.join(tgt, "a"), tgt_content)
       File.utime(now, now, File.join(src, "a"))
       File.utime(now + target_offset, now + target_offset, File.join(tgt, "a"))
-      job = Twin::Scanner.build_job(valid.merge("Path" => "a", "Source" => src, "Target" => tgt))
-      return job.conflict
+      return Twin::Scanner.build_job(valid.merge("Path" => "a", "Source" => src, "Target" => tgt))
     end
   end
 
   def test_conflict_within_tolerance_not_flagged
-    refute conflict_for(30)
+    refute file_job_for(30).conflict
   end
 
   def test_conflict_beyond_tolerance_flagged
-    assert conflict_for(120)
+    assert file_job_for(120).conflict
+  end
+
+  # The six false alarms of 2026-08-25: a newer timestamp over
+  # identical bytes is a hand-copy, not a conflict.
+  def test_identical_content_is_never_a_conflict
+    j = file_job_for(120, tgt_content: "x")
+    refute j.conflict
+    assert j.content_equal
+    assert_equal :in_sync, j.status
+  end
+
+  def test_directory_job_never_conflicts_on_mtime
+    Dir.mktmpdir do |dir|
+      src = File.join(dir, "src", "d")
+      tgt = File.join(dir, "tgt", "d")
+      FileUtils.mkdir_p(src)
+      FileUtils.mkdir_p(tgt)
+      now = Time.now
+      File.utime(now - 3600, now - 3600, src)
+      File.utime(now, now, tgt)   # target dir "newer", as after every sync
+      j = Twin::Scanner.build_job(valid.merge("Path" => "d",
+                                              "Source" => File.dirname(src),
+                                              "Target" => File.dirname(tgt)))
+      assert j.directory
+      refute j.conflict
+      assert_equal :unverified, j.status
+    end
   end
 end
 
@@ -775,6 +851,22 @@ class TestRemote < Minitest::Test
   def test_shellesc_quotes_spaces_and_quotes
     assert_equal "'/a dir/it'\\''s'", Twin::Remote.shellesc("/a dir/it's")
   end
+
+  # Both batch scripts travel to the far side wrapped in '...' — a single
+  # quote inside would end the wrapping early (and fish parses the POSIX
+  # escape for it differently, see stat_paths).
+  def test_batch_scripts_stay_free_of_single_quotes
+    refute_includes Twin::Remote::STAT_SCRIPT, "'"
+    refute_includes Twin::Remote::MD5_SCRIPT, "'"
+    refute_includes Twin::Remote::PREFLIGHT_SCRIPT, "'"
+  end
+
+  def test_preflight_parsing
+    out = "rsync\tok\nstat\t-\ndate\tok\nmd5\t-\nmd5sum\tok\n"
+    assert_equal({ "rsync" => true, "stat" => false, "date" => true,
+                   "md5" => false, "md5sum" => true },
+                 Twin::Remote.parse_preflight(out))
+  end
 end
 
 class TestRemoteJobs < Minitest::Test
@@ -1075,40 +1167,88 @@ class TestRsyncForceFlag < Minitest::Test
 end
 
 class TestConflictItemizeParsing < Minitest::Test
-  def paths(output)
-    # itemized_paths runs rsync; parse the same lines directly instead.
+  def entries(output)
+    # itemized runs rsync; parse the same lines directly instead.
     output.lines.filter_map do |line|
-      m = Twin::Conflict::ITEMIZE_LINE.match(line)
+      m = Twin::Conflict::ENTRY_LINE.match(line)
       next unless m
-      rel = m[1]
-      next if rel == "./" || rel.end_with?("/")
-      rel
+      kind = Twin::Conflict.classify(m[1])
+      next if kind == :attrs
+      { rel: m[2], kind: kind }
     end
   end
 
-  def test_picks_changed_files_only
+  def test_classifies_changed_lines_and_drops_noise
     out = <<~OUT
       sending incremental file list
       .d..tp..... ./
       >f.st...... monitor.sh
       >f+++++++++ smoke.sh
+      >f..t...... touched.sh
       .f...p..... icons/web.svg
 
       sent 199 bytes  received 31 bytes
     OUT
-    assert_equal ["monitor.sh", "smoke.sh"], paths(out)
+    assert_equal [
+      { rel: "monitor.sh", kind: :content },
+      { rel: "smoke.sh",   kind: :new },
+      { rel: "touched.sh", kind: :time },
+    ], entries(out)
   end
 
-  def test_skips_directories
-    assert_equal [], paths(".d..tp..... core/\ncd+++++++++ core/stage/\n")
+  def test_new_directory_counts_as_new
+    assert_equal [{ rel: "core/stage/", kind: :new }],
+                 entries(".d..tp..... core/\ncd+++++++++ core/stage/\n")
   end
 
-  def test_skips_deleting_lines
-    assert_equal [], paths("*deleting   old.rb\n")
+  def test_deleting_lines_are_deletions
+    assert_equal [{ rel: "old.rb", kind: :deleted }], entries("*deleting   old.rb\n")
   end
 
   def test_handles_paths_with_spaces
-    assert_equal ["My Folder/a b.txt"], paths(">f.st...... My Folder/a b.txt\n")
+    assert_equal [{ rel: "My Folder/a b.txt", kind: :content }],
+                 entries(">f.st...... My Folder/a b.txt\n")
+  end
+end
+
+class TestConflictAssemble < Minitest::Test
+  def assemble(forced, normal_rels, equal)
+    Twin::Conflict.assemble(forced, Set.new(normal_rels), equal) { |rel| "conflict:#{rel}" }
+  end
+
+  def e(rel, kind) = { rel: rel, kind: kind }
+
+  def test_normal_transfers_are_pending
+    d = assemble([e("a", :content), e("b", :new), e("c", :deleted)], %w[a b c], {})
+    assert_equal %w[a b c], d.pending
+    assert_empty d.conflicts
+    refute d.in_sync?
+  end
+
+  def test_held_back_content_change_is_a_conflict
+    d = assemble([e("a", :content)], [], {})
+    assert_equal ["conflict:a"], d.conflicts
+    assert_empty d.pending
+  end
+
+  # The fish_variables case: only the timestamp moved, bytes identical —
+  # noise, not drift, no matter which side is "newer".
+  def test_time_only_with_equal_content_is_noise
+    d = assemble([e("a", :time)], [], { "a" => true })
+    assert_equal ["a"], d.time_only
+    assert d.in_sync?
+  end
+
+  def test_time_only_with_different_content_transfers_or_conflicts
+    flowing = assemble([e("a", :time)], %w[a], { "a" => false })
+    assert_equal ["a"], flowing.pending
+
+    held = assemble([e("a", :time)], [], { "a" => false })
+    assert_equal ["conflict:a"], held.conflicts
+  end
+
+  def test_empty_forced_run_is_in_sync
+    assert assemble([], [], {}).in_sync?
   end
 end
 

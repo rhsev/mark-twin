@@ -28,7 +28,7 @@ module Twin
                     [--force] [--skip-conflicts]
         twin add <path>            scaffold a new sync entry for a local path
         twin log    [-n N] [--json]  recent journal entries (default 20)
-        twin doctor                check tools, renderers, and sync targets
+        twin doctor                check tools, renderers, targets, remote hosts
         twin --help                show this message
         twin --version             show the running version
 
@@ -150,6 +150,7 @@ module Twin
     def cmd_status(cfg, args)
       opts = parse_filter_opts(args)
       programs = Scanner.load_programs(cfg, **opts.slice(:file, :label, :show_all))
+      verify_drift(cfg, programs)
 
       if opts[:json]
         puts JSON.pretty_generate(programs.map { |p| program_to_hash(p) })
@@ -163,17 +164,66 @@ module Twin
         name = tty ? Picker.bold(p.name) : p.name
         puts "#{icon}  #{name}"
         p.jobs.each do |j|
-          src = j.source_exists ? j.source_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
-          tgt = j.target_exists ? j.target_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
-          tgt = "(unreachable)" if j.target_unreachable
           conflict = j.conflict ? (tty ? "  #{Picker.colorize(:target_newer, "!")}" : "  !") : ""
           puts "    #{j.path}#{conflict}"
-          puts "      src #{src}"
-          puts "      dst #{tgt}"
+          if j.directory
+            # Directory mtimes prove nothing — the drift verdict replaces them.
+            puts "      #{j.drift ? drift_summary(j.drift) : "(not checked — target unavailable)"}"
+          else
+            src = j.source_exists ? j.source_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
+            tgt = j.target_exists ? j.target_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
+            tgt = "(unreachable)" if j.target_unreachable
+            puts "      src #{src}"
+            puts "      dst #{tgt}"
+            puts "      content identical, timestamps differ" if j.content_equal
+          end
           # Named, not hidden: these belong to the target on purpose.
           puts "      own #{j.owned.join(', ')}" unless j.owned.nil? || j.owned.empty?
         end
       end
+    end
+
+    # Ask rsync what a sync of each directory job would actually do — the
+    # dry-runs are subprocess I/O, so a few run in parallel. File jobs are
+    # already content-checked by the scanner and need no second look.
+    def verify_drift(cfg, programs)
+      jobs = programs.flat_map(&:jobs).select do |j|
+        j.directory && j.active == 1 && !j.target_unreachable &&
+          j.source_exists && j.target_exists
+      end
+      return if jobs.empty?
+
+      queue = Queue.new
+      jobs.each { |j| queue << j }
+      Array.new([4, jobs.size].min) do
+        Thread.new do
+          loop do
+            j = begin
+              queue.pop(true)
+            rescue ThreadError
+              break
+            end
+            j.drift = Twin::Conflict.drift(cfg, j)
+          end
+        end
+      end.each(&:join)
+    end
+
+    def drift_summary(d)
+      if d.in_sync?
+        note = d.time_only.empty? ? "" : " (#{d.time_only.size} timestamp-only)"
+        return "in sync#{note}"
+      end
+      parts = []
+      parts << "#{d.pending.size} to sync: #{list_some(d.pending)}" unless d.pending.empty?
+      unless d.conflicts.empty?
+        parts << "#{d.conflicts.size} changed on target: #{list_some(d.conflicts.map(&:rel))} (twin sync will ask)"
+      end
+      parts.join("; ")
+    end
+
+    def list_some(rels, max = 3)
+      rels.take(max).join(", ") + (rels.size > max ? ", …" : "")
     end
 
     # ── sync ───────────────────────────────────────────────────────────────────
@@ -423,11 +473,13 @@ module Twin
         if targets.empty?
           puts "  (no programs loaded)"
         else
+          reachable_hosts = []
           targets.each do |tgt|
             if Twin::Remote.remote?(tgt)
               host, = Twin::Remote.split(tgt)
               if Twin::Remote.reachable?(host)
                 puts "  ✓  #{tgt}  (ssh)"
+                reachable_hosts << host
               else
                 puts "  ✗  #{tgt}  (ssh: #{host} not reachable)"
                 ok = false
@@ -439,6 +491,7 @@ module Twin
               ok = false
             end
           end
+          ok = doctor_remote_tools(reachable_hosts.uniq) && ok
         end
       rescue => e
         puts "  ✗  #{e.message}"
@@ -451,6 +504,42 @@ module Twin
 
     def tool_available?(name)
       system("command -v #{name} > /dev/null 2>&1")
+    end
+
+    # Probe each reachable ssh host once for what the far side must provide.
+    # A missing rsync fails doctor — the first sync would die mid-run with a
+    # raw protocol error. Missing stat/date or md5/md5sum only degrade
+    # (unknown mtimes, conservative conflicts), so they warn and say so.
+    def doctor_remote_tools(hosts)
+      return true if hosts.empty?
+      ok = true
+      puts "\nRemote tools"
+      hosts.each do |host|
+        tools = Twin::Remote.preflight(host)
+        if tools.nil?
+          puts "  ✗  #{host}  (probe failed)"
+          ok = false
+          next
+        end
+        problems = []
+        unless tools["rsync"]
+          problems << "rsync missing — syncs will fail (OpenWrt: opkg install rsync)"
+          ok = false
+        end
+        unless tools["stat"] || tools["date"]
+          problems << "no stat or date — remote mtimes read as unknown"
+        end
+        unless tools["md5"] || tools["md5sum"]
+          problems << "no md5 or md5sum — timestamp-only files stay flagged as conflicts"
+        end
+        if problems.empty?
+          have = ["rsync", tools["stat"] ? "stat" : "date", tools["md5"] ? "md5" : "md5sum"]
+          puts "  ✓  #{host}  (#{have.join(', ')})"
+        else
+          puts "  #{tools["rsync"] ? "⚠" : "✗"}  #{host}  #{problems.join('; ')}"
+        end
+      end
+      ok
     end
 
     # ── option parsing ─────────────────────────────────────────────────────────
@@ -501,6 +590,11 @@ module Twin
       h[:status]       = j.status
       h[:source_mtime] = j.source_mtime&.iso8601
       h[:target_mtime] = j.target_mtime&.iso8601
+      h[:drift]        = j.drift && {
+        pending:   j.drift.pending,
+        time_only: j.drift.time_only,
+        conflicts: j.drift.conflicts.map(&:rel),
+      }
       h
     end
   end

@@ -2,6 +2,7 @@ require "json"
 require "open3"
 
 require_relative "remote"
+require_relative "conflict"
 
 module Twin
   # One YAML block from a sync-file, enriched with live filesystem state.
@@ -9,7 +10,7 @@ module Twin
     :program, :path, :description, :active, :excludes, :owned, :label,
     :source, :target, :cmd, :delete, :render, :render_outdated, :target_path_field, :sync_file,
     :source_exists, :target_exists, :source_mtime, :target_mtime, :conflict,
-    :target_unreachable,
+    :target_unreachable, :directory, :content_equal, :drift,
     keyword_init: true,
   ) do
     def source_path = File.join(source, path)
@@ -29,6 +30,19 @@ module Twin
       # Render jobs compare by content, not mtime — a rendered target's mtime
       # bears no relation to the template's.
       return render_outdated ? :source_newer : :in_sync if render
+      # Directory jobs carry no mtime verdict at all: a directory's mtime
+      # records the last entry added or removed — after a sync that is the
+      # sync itself, and even an *excluded* file moves it. `twin status`
+      # fills in `drift` by asking rsync; without it the honest answer is
+      # "not checked", not a guess.
+      if directory
+        return :unverified unless drift
+        return :target_newer if drift.conflicts.any?
+        return :source_newer if drift.pending.any?
+        return :in_sync
+      end
+      # Same bytes under a newer timestamp (a `cat >` copy) is not drift.
+      return :in_sync if content_equal
       return :target_newer if conflict
       return :in_sync if source_mtime.nil? || target_mtime.nil?
       delta = source_mtime - target_mtime
@@ -50,7 +64,7 @@ module Twin
     # Aggregate status across jobs — worst first.
     def status
       states = jobs.map(&:status)
-      %i[unreachable both_missing missing_source missing_target target_newer source_newer disabled in_sync]
+      %i[unreachable both_missing missing_source missing_target target_newer source_newer unverified disabled in_sync]
         .find { |s| states.include?(s) } || :in_sync
     end
 
@@ -103,9 +117,31 @@ module Twin
           mtime = stats[rpath]
           j.target_exists = !mtime.nil?
           j.target_mtime  = mtime
-          j.conflict      = j.source_exists && mtime && j.source_mtime &&
+          j.conflict      = !j.directory && j.source_exists && mtime && j.source_mtime &&
                             mtime - j.source_mtime >= 60
         end
+        verify_remote_file_content(host, host_jobs)
+      end
+    end
+
+    # Remote counterpart of the local content check in build_job: file jobs
+    # whose mtimes drifted get one batched md5 round per host. Identical
+    # content clears the conflict — the timestamps merely disagree.
+    def verify_remote_file_content(host, host_jobs)
+      candidates = host_jobs.select do |j|
+        !j.directory && !j.render && j.source_exists && j.target_exists &&
+          j.source_mtime && j.target_mtime && (j.target_mtime - j.source_mtime).abs >= 60
+      end
+      return if candidates.empty?
+
+      sums = Twin::Remote.md5_paths(host, candidates.map { |j| Twin::Remote.split(j.target_path).last })
+      return if sums.nil?
+
+      candidates.each do |j|
+        remote_sum = sums[Twin::Remote.split(j.target_path).last]
+        next if remote_sum.nil?
+        j.content_equal = remote_sum == Twin::Conflict.local_md5(j.source_path)
+        j.conflict      = false if j.content_equal
       end
     end
 
@@ -170,8 +206,22 @@ module Twin
       # target). conflict stays false so the mtime conflict-warning skips them.
       render_outdated = render ? render_outdated?(src_full, tgt_full, vars, path) : nil
 
+      # rsync mirrors directories, so a directory source means a directory
+      # target — also for remote jobs, whose far side can't be inspected here.
+      directory = src_exists && File.directory?(src_full)
+
+      # A file job whose mtimes drifted apart may still hold the same bytes
+      # (a `cat >` copy before the first twin run). Check before judging;
+      # a directory's own mtime is judged not at all (see Job#status).
+      content_equal = nil
+      if !render && !remote && !directory && src_exists && tgt_exists &&
+         src_mtime && tgt_mtime && (tgt_mtime - src_mtime).abs >= 60
+        content_equal = Twin::Conflict.same_content?(src_full, tgt_full)
+      end
+
       # Same 60s tolerance as Job#status, so mtime jitter never flags a conflict.
-      conflict = !render && src_exists && tgt_exists && tgt_mtime && src_mtime &&
+      conflict = !render && !directory && !content_equal &&
+                 src_exists && tgt_exists && tgt_mtime && src_mtime &&
                  tgt_mtime - src_mtime >= 60
 
       Job.new(
@@ -196,6 +246,8 @@ module Twin
         target_mtime:     tgt_mtime,
         conflict:         !!conflict,
         target_unreachable: false,
+        directory:        directory,
+        content_equal:    content_equal,
       )
     end
 

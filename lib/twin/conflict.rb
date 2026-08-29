@@ -1,40 +1,43 @@
 require "digest"
+require "set"
 
 require_relative "remote"
 
 module Twin
-  # Finding out which files on the target would be silently skipped by rsync's
-  # --update, and whether that actually matters.
+  # What would a sync actually change? mtimes cannot answer that — a
+  # directory's mtime records the last entry added or removed (after a sync:
+  # the sync itself), a file's mtime moves on a `cat >` copy that changed
+  # nothing, and rsync equalises directory mtimes on every run anyway. So we
+  # ask rsync, which has the answer already and knows its own matching rules
+  # better than any reimplementation would:
   #
-  # `Job#conflict` is no help here. It compares the mtime of the job's own path,
-  # and for a directory job that is the directory's mtime — which says nothing
-  # about the files inside it. Worse, it is wrong in exactly the case that
-  # matters: editing a file in place leaves its directory's mtime untouched, and
-  # `rsync -a` equalises directory mtimes on every run anyway. A hand-edit on
-  # the target is therefore invisible to it.
+  #   1. What would a *forced* run transfer?
+  #      One dry-run without --update. Empty means fully in sync — the common
+  #      case and the cheap exit: one stat-walk per job and no more.
   #
-  # So we ask rsync, which has the answer already and knows its own matching
-  # rules better than any reimplementation would:
+  #   2. Of that, what does --update hold back?
+  #      A second dry-run with --update. Everything the forced run would move
+  #      but the normal one would not is exactly the set --update protects —
+  #      files the target owns more recently.
   #
-  #   1. Which files does --update hold back?
-  #      Dry-run twice, once with --update and once without. Everything the
-  #      second run would transfer but the first would not is exactly the set
-  #      --update protects.
-  #
-  #   2. Of those, which differ in content?
-  #      Only these are worth asking about. A file that is merely newer — same
-  #      bytes, later timestamp — is noise, and noise is what turns a prompt
-  #      into a reflex. Sync both sides of a tree in either order and you get
-  #      dozens of them.
-  #
-  # The first dry-run is also the cheap exit: when a forced run would move
-  # nothing, the job is fully in sync and the second run is skipped. That is the
-  # common case, so a quiet sync costs one extra stat-walk per job and no more.
+  #   3. What differs only in timestamp?
+  #      rsync's itemize flags say so (">f..t" — time, same size). Those files
+  #      are checksummed; identical content is noise, not drift, and noise is
+  #      what turns a prompt into a reflex. Sync both sides of a tree in
+  #      either order and you get dozens of them.
   module Conflict
-    # One file the target owns more recently than the source, with content that
-    # actually differs. `same_content` is nil when it could not be determined
-    # (remote targets) — treated as a conflict, because guessing in the other
-    # direction would overwrite work.
+    # The classified outcome of a forced dry-run for one job.
+    #   pending   — relative paths a sync would genuinely change
+    #   time_only — same bytes, different timestamp; a sync merely aligns them
+    #   conflicts — Entry list: target-side changes whose content differs
+    Drift = Struct.new(:pending, :time_only, :conflicts, keyword_init: true) do
+      def in_sync? = pending.empty? && conflicts.empty?
+    end
+
+    # One file the target owns more recently than the source, with content
+    # that actually differs (or could not be checked — remote md5 failed —
+    # which is treated as differing, because guessing the other way would
+    # overwrite work). target_mtime is nil for remote targets.
     Entry = Struct.new(:job, :rel, :source_path, :target_path,
                        :source_mtime, :target_mtime, keyword_init: true) do
       def age_delta
@@ -43,55 +46,113 @@ module Twin
       end
     end
 
-    # rsync --itemize-changes line → relative path. Change lines start with an
-    # update type and a file type (">f.st...... lib/foo.rb"); "*deleting" and
-    # the surrounding prose do not match.
-    ITEMIZE_LINE = /\A[<>ch][fdLDS]\S*\s+(.+?)\s*\z/
+    # rsync --itemize-changes line → [flags, relative path]. Change lines
+    # start with an update type and a file type (">f.st...... lib/foo.rb") or
+    # "*deleting"; attribute-only lines (leading ".") and the surrounding
+    # prose do not match — they describe no change a sync would make.
+    ENTRY_LINE = /\A(\*deleting|[<>ch][fdLDS]\S*)\s+(.+?)\s*\z/
 
     module_function
 
-    # Real conflicts for one job, in the order rsync reports them.
+    # Classify one job's drift by asking rsync. nil for render jobs (they
+    # compare content already and never use --update) and when a side is
+    # missing (status reports that on its own).
+    def drift(cfg, job)
+      return nil if job.render
+      return nil unless job.source_exists && job.target_exists
+
+      forced = itemized(Twin::Sync.rsync_args(cfg, job, dry_run: true, force: true))
+      return Drift.new(pending: [], time_only: [], conflicts: []) if forced.empty?
+
+      normal_rels = itemized(Twin::Sync.rsync_args(cfg, job, dry_run: true, force: false))
+                    .map { |e| e[:rel] }.to_set
+      equal = equality_map(job, forced.filter_map { |e| e[:rel] if e[:kind] == :time })
+
+      assemble(forced, normal_rels, equal) do |rel|
+        conflict_entry(job, rel)
+      end
+    end
+
+    # Target-side changes worth asking about, in the order rsync reports them.
     # Empty when --update holds nothing back, or holds back only identical files.
     def detect(cfg, job)
-      # Render jobs compare by content already and never use --update.
-      return [] if job.render
-      return [] unless job.source_exists && job.target_exists
-
-      held_back_paths(cfg, job).filter_map { |rel| entry_for(job, rel) }
+      drift(cfg, job)&.conflicts || []
     end
 
-    # Relative paths that --update would skip: (would transfer forced) minus
-    # (would transfer normally).
-    def held_back_paths(cfg, job)
-      forced = itemized_paths(Twin::Sync.rsync_args(cfg, job, dry_run: true, force: true))
-      return [] if forced.empty?   # nothing to move at all — no need to ask rsync twice
-
-      normal = itemized_paths(Twin::Sync.rsync_args(cfg, job, dry_run: true, force: false))
-      forced - normal
+    # Pure assembly of a Drift from parsed entries. A file the normal run
+    # would also transfer flows source→target as intended; one only the
+    # forced run would touch is being held back by --update — the target owns
+    # it more recently. Content decides whether that is a conflict or noise.
+    def assemble(forced, normal_rels, equal)
+      d = Drift.new(pending: [], time_only: [], conflicts: [])
+      forced.each do |e|
+        rel = e[:rel]
+        case e[:kind]
+        when :deleted, :new then d.pending << rel
+        when :content
+          normal_rels.include?(rel) ? d.pending << rel : d.conflicts << yield(rel)
+        when :time
+          if equal[rel]
+            d.time_only << rel
+          elsif normal_rels.include?(rel)
+            d.pending << rel
+          else
+            d.conflicts << yield(rel)
+          end
+        end
+      end
+      d
     end
 
-    def itemized_paths(args)
+    # Run rsync and parse its itemize output into [{rel:, kind:}, ...].
+    def itemized(args)
       output, status = Twin::Sync.run(args)
       return [] unless status.success?
       output.lines.filter_map do |line|
-        m = ITEMIZE_LINE.match(line)
+        m = ENTRY_LINE.match(line)
         next unless m
-        rel = m[1]
-        next if rel == "./" || rel.end_with?("/")   # directories carry no content
-        rel
+        kind = classify(m[1])
+        next if kind == :attrs
+        { rel: m[2], kind: kind }
       end
     end
 
-    # Build an Entry unless source and target hold the same bytes.
-    def entry_for(job, rel)
-      src = resolve(job.source_path, rel)
-      tgt = resolve(job.target_path, rel)
+    # Itemize flags → what kind of change this is.
+    #   :deleted — target-only file, removed by Delete: true
+    #   :new     — does not exist on the target yet (files and directories)
+    #   :content — size differs, so the bytes certainly do
+    #   :time    — timestamp only; content equality still to be determined
+    #   :attrs   — permissions/owner, no change a sync-file cares about
+    def classify(flags)
+      return :deleted if flags == "*deleting"
+      body = flags[2..].to_s
+      return :new     if body.include?("+")
+      return :content if body.include?("s")
+      return :time    if body.include?("t") || body.include?("T")
+      :attrs
+    end
 
-      # Remote targets can't be read here; report them rather than assume.
-      unless job.remote?
-        return nil if same_content?(src, tgt)
+    # Content equality for the :time candidates, {rel => bool}. Local pairs
+    # are compared directly; remote targets get one batched md5 round per job
+    # (STAT_SCRIPT-style), and an unanswered path counts as differing.
+    def equality_map(job, rels)
+      return {} if rels.empty?
+      if job.remote?
+        _host, rbase = Twin::Remote.split(job.target_path)
+        remote_paths = rels.to_h { |r| [r, job.directory ? File.join(rbase, r) : rbase] }
+        sums = Twin::Remote.md5_paths(Twin::Remote.split(job.target)[0], remote_paths.values) || {}
+        rels.to_h do |r|
+          local = local_md5(resolve(job.source_path, r))
+          [r, !local.nil? && sums[remote_paths[r]] == local]
+        end
+      else
+        rels.to_h { |r| [r, same_content?(resolve(job.source_path, r), resolve(job.target_path, r))] }
       end
+    end
 
+    def conflict_entry(job, rel)
+      src = resolve(job.source_path, rel)
+      tgt = job.remote? ? job.target_path : resolve(job.target_path, rel)
       Entry.new(
         job: job, rel: rel, source_path: src, target_path: tgt,
         source_mtime: mtime(src), target_mtime: job.remote? ? nil : mtime(tgt),
@@ -113,6 +174,12 @@ module Twin
     end
 
     def digest(path) = Digest::SHA256.file(path).hexdigest
+
+    def local_md5(path)
+      Digest::MD5.file(path).hexdigest
+    rescue Errno::ENOENT, Errno::EACCES, Errno::EISDIR
+      nil
+    end
 
     def mtime(path)
       File.mtime(path)

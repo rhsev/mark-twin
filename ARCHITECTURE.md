@@ -54,17 +54,25 @@ test/test_pure.rb
 ```
 program, path, description, active, excludes, owned, label, source, target, cmd,
 delete, render, render_outdated, target_path_field, sync_file,
-source_exists, target_exists, source_mtime, target_mtime, conflict
+source_exists, target_exists, source_mtime, target_mtime, conflict,
+directory, content_equal, drift
 ```
 
 `excludes` and `owned` both become `--exclude` (via `Job#all_excludes`); they
-are kept apart so `status` can report intent. `conflict` is the coarse mtime
-flag used by `status` only — conflict *resolution* ignores it and asks rsync
-directly, because a directory's mtime says nothing about edits inside it.
+are kept apart so `status` can report intent.
+
+mtime is never the verdict, only a pre-filter for file jobs — and even there
+identical bytes under a drifted timestamp clear it (`content_equal`; remote
+targets get one batched md5 round per host). `conflict` is therefore
+content-verified when set. Directory jobs get no mtime judgment at all: a
+directory's mtime moves on every sync and on every excluded file, so
+`Job#status` reports `unverified` until `twin status` fills `drift` by asking
+rsync (`Conflict.drift` — paired dry-runs, itemize classification, checksums
+for timestamp-only candidates).
 
 `Job#status` → one of `disabled / unreachable / both_missing / missing_source /
-missing_target / target_newer / in_sync / source_newer`. Render jobs derive status from content
-(`render_outdated`), not mtime; non-render jobs ignore those fields.
+missing_target / target_newer / in_sync / source_newer / unverified`. Render
+jobs derive status from content (`render_outdated`), not mtime.
 `Job#target_path` joins `target` with `target_path_field || path`.
 
 **Program** — group of Jobs sharing a `program` name:
