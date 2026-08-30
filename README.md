@@ -39,7 +39,9 @@ way.
 That is the whole idea, and for most entries it stays as small as the excerpt
 above. The rest of this README is long because twin also covers more complex
 cases: files that are specific to the other computer, files that have changed
-on both sides since the last sync, and paths that differ per host.
+on both sides since the last sync, and paths that differ per host. If you are
+wondering how this differs from chezmoi and its kind:
+[Alternatives](#alternatives).
 
 ## Why Markdown
 
@@ -491,6 +493,27 @@ global_excludes:
 
 Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`, `TWIN_HOST` (which host
 twin runs as — lets one config serve both machines).
+
+## Alternatives
+
+twin overlaps with the dotfile managers without being one: it syncs whatever
+you want, documents included, but it specialises in configuration files.
+Taking [chezmoi](https://chezmoi.io) as the most capable representative of
+its kind:
+
+| | twin | dotfile managers (e.g. chezmoi) |
+|---|---|---|
+| Focus | deliberate sync between a few machines | converging many machines from one repo |
+| Model | interactive: pick, preview, sync | git: commit, push, apply |
+| Where the *why* lives | prose next to the YAML block, same file | commit messages, separate docs |
+| Conflicts | stops and asks, diff in hand | three-way merge on apply |
+| Templating | host paths (`{{dst.home}}`) | full engine, secrets from password managers |
+| Scale | two or three Macs/servers | dozens of machines |
+
+If you want a fleet converging automatically, or secrets injected at apply
+time, choose chezmoi. twin is built for the smaller case: easy to configure,
+with room to read and think about what the target changed before it gets
+overwritten.
 
 ## Design
 
