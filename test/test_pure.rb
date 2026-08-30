@@ -1366,3 +1366,160 @@ class TestSummarizeOutput < Minitest::Test
     refute_includes Twin::Sync.summarize("created directory /tgt/new\n>f+++++++++ a.rb\n"), "created directory"
   end
 end
+
+class TestDriftCandidates < Minitest::Test
+  def job(**kw)
+    defaults = {
+      program: "p", path: "a", description: "", active: 1, excludes: [],
+      label: "", source: "/src", target: "/tgt", cmd: "", sync_file: "",
+      source_exists: true, target_exists: true,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    }
+    Twin::Job.new(**defaults.merge(kw))
+  end
+
+  def test_selects_only_unverified_directories
+    dir      = job(directory: true)
+    file     = job
+    verified = job(directory: true,
+                   drift: Twin::Conflict::Drift.new(pending: [], time_only: [], conflicts: []))
+    assert_equal [dir], Twin::Conflict.drift_candidates([dir, file, verified])
+  end
+
+  def test_skips_unanswerable_jobs
+    jobs = [
+      job(directory: true, active: 0),
+      job(directory: true, target_unreachable: true),
+      job(directory: true, source_exists: false),
+      job(directory: true, target_exists: false),
+    ]
+    assert_empty Twin::Conflict.drift_candidates(jobs)
+  end
+end
+
+class TestMergePrograms < Minitest::Test
+  def job(program, path, sync_file)
+    Twin::Job.new(
+      program: program, path: path, description: "", active: 1, excludes: [],
+      label: "", source: "/s", target: "/t", cmd: "", sync_file: sync_file,
+      source_exists: true, target_exists: true,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    )
+  end
+
+  def prog(name, *jobs) = Twin::Program.new(name: name, jobs: jobs)
+
+  def test_same_name_across_files_becomes_one_entry
+    merged = Twin::Picker.merge_programs([
+      prog("fileview", job("fileview", "build/fileview.app", "apps.md")),
+      prog("other",    job("other", "x", "apps.md")),
+      prog("fileview", job("fileview", ".config/fileview", "home.md")),
+    ])
+    assert_equal %w[fileview other], merged.map(&:name)
+    fileview = merged.first
+    assert_equal ["build/fileview.app", ".config/fileview"], fileview.jobs.map(&:path)
+    assert_equal ["apps.md", "home.md"], fileview.jobs.map(&:sync_file)
+  end
+
+  def test_merge_is_case_insensitive_and_keeps_first_seen_name
+    merged = Twin::Picker.merge_programs([
+      prog("Ticker", job("Ticker", "Ticker.app", "apps.md")),
+      prog("ticker", job("ticker", ".config/ticker", "home.md")),
+    ])
+    assert_equal ["Ticker"], merged.map(&:name)
+    assert_equal 2, merged.first.jobs.size
+  end
+
+  def test_single_program_passes_through_unchanged
+    p = prog("solo", job("solo", "a", "f.md"))
+    assert_same p, Twin::Picker.merge_programs([p]).first
+  end
+
+  def test_jobs_stay_grouped_per_file_in_document_order
+    merged = Twin::Picker.merge_programs([
+      prog("dylan", job("dylan", "server.rb", "dylan.md"), job("dylan", "lib", "dylan.md")),
+      prog("dylan", job("dylan", "conf", "home.md")),
+    ])
+    assert_equal [%w[server.rb dylan.md], %w[lib dylan.md], %w[conf home.md]],
+                 merged.first.jobs.map { |j| [j.path, j.sync_file] }
+  end
+end
+
+class TestMergeProgramsSort < Minitest::Test
+  def prog(name)
+    j = Twin::Job.new(
+      program: name, path: "a", description: "", active: 1, excludes: [],
+      label: "", source: "/s", target: "/t", cmd: "", sync_file: "f.md",
+      source_exists: true, target_exists: true,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    )
+    Twin::Program.new(name: name, jobs: [j])
+  end
+
+  def test_sorted_case_insensitively
+    merged = Twin::Picker.merge_programs([prog("zsh"), prog("Ticker"), prog("adrem")])
+    assert_equal %w[adrem Ticker zsh], merged.map(&:name)
+  end
+end
+
+class TestVerifyFalse < Minitest::Test
+  def job(**kw)
+    defaults = {
+      program: "p", path: "a", description: "", active: 1, excludes: [],
+      label: "", source: "/src", target: "/tgt", cmd: "", sync_file: "",
+      source_exists: true, target_exists: true,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    }
+    Twin::Job.new(**defaults.merge(kw))
+  end
+
+  def test_verify_false_is_never_a_drift_candidate
+    assert_empty Twin::Conflict.drift_candidates([job(directory: true, verify: false)])
+  end
+
+  def test_default_and_true_stay_candidates
+    jobs = [job(directory: true), job(directory: true, verify: true)]
+    assert_equal jobs, Twin::Conflict.drift_candidates(jobs)
+  end
+
+  def test_scanner_parses_verify_field
+    r = { "Program" => "big", "Path" => "x", "Source" => "/s", "Target" => "/t",
+          "Active" => 1, "Verify" => false, "_note_file" => "f.md" }
+    assert_equal false, Twin::Scanner.build_job(r).verify
+    assert_equal true,  Twin::Scanner.build_job(r.merge("Verify" => true)).verify
+    assert_equal true,  Twin::Scanner.build_job(r.tap { |h| h.delete("Verify") }).verify
+  end
+end
+
+class TestBracketConvention < Minitest::Test
+  def prog(name, file: "f.md")
+    j = Twin::Job.new(
+      program: name, path: "a", description: "", active: 1, excludes: [],
+      label: "", source: "/s", target: "/t", cmd: "", sync_file: file,
+      source_exists: true, target_exists: true,
+      source_mtime: nil, target_mtime: nil, conflict: false,
+    )
+    Twin::Program.new(name: name, jobs: [j])
+  end
+
+  def test_bracket_suffix_groups_under_base_name
+    merged = Twin::Picker.merge_programs([
+      prog("livesync", file: "binaries.md"),
+      prog("livesync [agent]", file: "home.md"),
+    ])
+    assert_equal ["livesync"], merged.map(&:name)
+    assert_equal ["livesync", "livesync [agent]"], merged.first.jobs.map(&:program)
+  end
+
+  def test_only_bracketed_variants_fall_back_to_base
+    merged = Twin::Picker.merge_programs([
+      prog("livesync [agent]"), prog("livesync [cli]"),
+    ])
+    assert_equal ["livesync"], merged.map(&:name)
+  end
+
+  def test_brackets_elsewhere_are_just_a_name
+    merged = Twin::Picker.merge_programs([prog("a [x] b"), prog("a")])
+    assert_equal ["a", "a [x] b"], merged.map(&:name).sort
+  end
+end

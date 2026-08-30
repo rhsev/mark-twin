@@ -93,7 +93,7 @@ module Twin
         exit 1
       end
 
-      programs = Scanner.load_programs(cfg, file: file, show_all: false)
+      programs = Picker.merge_programs(Scanner.load_programs(cfg, file: file, show_all: false))
       if programs.empty?
         warn "no active programs found#{" in #{file}" if file}"
         return
@@ -125,7 +125,7 @@ module Twin
         break if $stdin.gets&.strip == "q"
 
         # reload so status reflects what was just synced, stay on this program
-        programs     = Scanner.load_programs(cfg, file: file, show_all: false)
+        programs     = Picker.merge_programs(Scanner.load_programs(cfg, file: file, show_all: false))
         selected_key = [program.name, program.sync_file]
       end
     end
@@ -168,7 +168,11 @@ module Twin
           puts "    #{j.path}#{conflict}"
           if j.directory
             # Directory mtimes prove nothing — the drift verdict replaces them.
-            puts "      #{j.drift ? drift_summary(j.drift) : "(not checked — target unavailable)"}"
+            note = if j.drift then drift_summary(j.drift)
+                   elsif j.verify == false then "(not checked — Verify: false)"
+                   else "(not checked — target unavailable)"
+                   end
+            puts "      #{note}"
           else
             src = j.source_exists ? j.source_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
             tgt = j.target_exists ? j.target_mtime.strftime("%Y-%m-%d %H:%M:%S") : "(not found)"
@@ -183,30 +187,9 @@ module Twin
       end
     end
 
-    # Ask rsync what a sync of each directory job would actually do — the
-    # dry-runs are subprocess I/O, so a few run in parallel. File jobs are
-    # already content-checked by the scanner and need no second look.
+    # Ask rsync what a sync of each directory job would actually do.
     def verify_drift(cfg, programs)
-      jobs = programs.flat_map(&:jobs).select do |j|
-        j.directory && j.active == 1 && !j.target_unreachable &&
-          j.source_exists && j.target_exists
-      end
-      return if jobs.empty?
-
-      queue = Queue.new
-      jobs.each { |j| queue << j }
-      Array.new([4, jobs.size].min) do
-        Thread.new do
-          loop do
-            j = begin
-              queue.pop(true)
-            rescue ThreadError
-              break
-            end
-            j.drift = Twin::Conflict.drift(cfg, j)
-          end
-        end
-      end.each(&:join)
+      Twin::Conflict.fill_drift(cfg, programs.flat_map(&:jobs))
     end
 
     def drift_summary(d)
@@ -314,7 +297,10 @@ module Twin
       return true  if force
       return false if skip_conflicts || dry_run
 
-      conflicts = jobs.flat_map { |j| Twin::Conflict.detect(cfg, j) }
+      # Verify: false jobs skip the detection round (too big to walk); rsync's
+      # --update still keeps newer target files, they just aren't listed here.
+      conflicts = jobs.reject { |j| j.verify == false }
+                      .flat_map { |j| Twin::Conflict.detect(cfg, j) }
       return false if conflicts.empty?
 
       report_conflicts(conflicts)

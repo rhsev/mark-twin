@@ -79,6 +79,38 @@ module Twin
       drift(cfg, job)&.conflicts || []
     end
 
+    # Directory jobs whose drift is still unknown and answerable — both sides
+    # present, target reachable, not opted out via Verify: false. File jobs
+    # are content-checked by the scanner and need no second look.
+    def drift_candidates(jobs)
+      jobs.select do |j|
+        j.drift.nil? && j.verify != false && j.directory && j.active == 1 &&
+          !j.target_unreachable && j.source_exists && j.target_exists
+      end
+    end
+
+    # Fill `drift` on every candidate by asking rsync — the dry-runs are
+    # subprocess I/O, so a few run in parallel.
+    def fill_drift(cfg, jobs)
+      jobs = drift_candidates(jobs)
+      return if jobs.empty?
+
+      queue = Queue.new
+      jobs.each { |j| queue << j }
+      Array.new([4, jobs.size].min) do
+        Thread.new do
+          loop do
+            j = begin
+              queue.pop(true)
+            rescue ThreadError
+              break
+            end
+            j.drift = drift(cfg, j)
+          end
+        end
+      end.each(&:join)
+    end
+
     # Pure assembly of a Drift from parsed entries. A file the normal run
     # would also transfer flows source→target as intended; one only the
     # forced run would touch is being held back by --update — the target owns

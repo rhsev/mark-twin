@@ -10,7 +10,7 @@ module Twin
     :program, :path, :description, :active, :excludes, :owned, :label,
     :source, :target, :cmd, :delete, :render, :render_outdated, :target_path_field, :sync_file,
     :source_exists, :target_exists, :source_mtime, :target_mtime, :conflict,
-    :target_unreachable, :directory, :content_equal, :drift,
+    :target_unreachable, :directory, :content_equal, :drift, :verify,
     keyword_init: true,
   ) do
     def source_path = File.join(source, path)
@@ -129,7 +129,8 @@ module Twin
     # content clears the conflict — the timestamps merely disagree.
     def verify_remote_file_content(host, host_jobs)
       candidates = host_jobs.select do |j|
-        !j.directory && !j.render && j.source_exists && j.target_exists &&
+        j.verify != false && !j.directory && !j.render &&
+          j.source_exists && j.target_exists &&
           j.source_mtime && j.target_mtime && (j.target_mtime - j.source_mtime).abs >= 60
       end
       return if candidates.empty?
@@ -183,6 +184,11 @@ module Twin
       return nil if path.empty? || source.empty? || target.empty?
 
       render   = r["Render"] == true
+      # Verify: false — no content verification for this entry, ever: too big
+      # or too remote for md5/dry-run rounds (a node_modules tree over SMB).
+      # Status falls back to mtime for files and stays ∘ for directories; the
+      # pre-sync conflict check skips it (--update still protects the target).
+      verify   = r["Verify"] != false
       excludes = split_list(r["Exclude"])
       # Own: paths inside the sync scope that the TARGET owns — machine-specific
       # config the source must never clobber. Same rsync effect as Exclude, but
@@ -214,7 +220,7 @@ module Twin
       # (a `cat >` copy before the first twin run). Check before judging;
       # a directory's own mtime is judged not at all (see Job#status).
       content_equal = nil
-      if !render && !remote && !directory && src_exists && tgt_exists &&
+      if verify && !render && !remote && !directory && src_exists && tgt_exists &&
          src_mtime && tgt_mtime && (tgt_mtime - src_mtime).abs >= 60
         content_equal = Twin::Conflict.same_content?(src_full, tgt_full)
       end
@@ -248,6 +254,7 @@ module Twin
         target_unreachable: false,
         directory:        directory,
         content_equal:    content_equal,
+        verify:           verify,
       )
     end
 

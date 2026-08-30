@@ -53,7 +53,7 @@ test/test_pure.rb
 
 ```
 program, path, description, active, excludes, owned, label, source, target, cmd,
-delete, render, render_outdated, target_path_field, sync_file,
+delete, render, render_outdated, target_path_field, sync_file, verify,
 source_exists, target_exists, source_mtime, target_mtime, conflict,
 directory, content_equal, drift
 ```
@@ -68,7 +68,10 @@ content-verified when set. Directory jobs get no mtime judgment at all: a
 directory's mtime moves on every sync and on every excluded file, so
 `Job#status` reports `unverified` until `twin status` fills `drift` by asking
 rsync (`Conflict.drift` — paired dry-runs, itemize classification, checksums
-for timestamp-only candidates).
+for timestamp-only candidates). `Verify: false` opts a job out of every
+content round — scanner md5, drift dry-runs, pre-sync conflict detection —
+for entries where the walk itself is the cost; its status stays mtime-based
+(files) or `unverified` (directories).
 
 `Job#status` → one of `disabled / unreachable / both_missing / missing_source /
 missing_target / target_newer / in_sync / source_newer / unverified`. Render
@@ -164,16 +167,28 @@ rationale.
 Two stages:
 
 1. **Stage 1 — program picker.** Multi-line NUL-separated entries (`--read0`).
-   Each entry has a header (icon, program name, job count, sync-file) and
+   Each entry has a header (icon, program name, job count, sync-files) and
    indented body lines (one per job). No preview. Single-select. ESC exits.
+   Same-named programs (case-insensitive) from different sync-files are merged
+   into one entry, and a trailing bracket group joins by convention:
+   `livesync [agent]` merges under `livesync`. A picker-only view
+   (`Picker.merge_programs`); the data model, `status`, `sync -p` and JSON
+   keep the per-file programs. Jobs stay grouped per file in document order,
+   so a file's closing `Cmd` block still fires after its own paths.
 2. **Stage 2 — path multi-picker.** Tab-delimited rows (`id\tdisplay`),
-   `--with-nth=2` hides the `id`. Multi-select via Tab. Preview pane shows
-   the *compact* view (frontmatter + intro + the heading section containing
-   the YAML block for the highlighted path), rendered via
+   `--with-nth=2` hides the `id`. Multi-select via Tab. On open, directory
+   jobs get their drift verified (`Conflict.fill_drift` — affordable for one
+   program, unlike for the whole of stage 1). A merged program's rows are
+   sectioned per sync-file by dim header rows whose id is `-`; they map to no
+   job, so toggling one is inert. Preview pane shows the *compact* view
+   (frontmatter + intro + the heading section containing the YAML block for
+   the highlighted path) from the job's own sync-file, rendered via
    `apex --plugins -t terminal256`. ESC returns to Stage 1.
 
 Compact previews are pre-rendered to per-job tempfiles before fzf launches.
-An `awk` lookup maps `{1}` (the id) → tempfile path.
+An `awk` lookup maps `{1}` (the id) → tempfile path. The Tempfile objects
+stay referenced while fzf runs — a GC'd Tempfile unlinks its file under the
+running preview.
 
 ## CLI
 

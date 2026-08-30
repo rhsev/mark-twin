@@ -58,7 +58,10 @@ on both sides since the last sync, and paths that differ per host.
 ## Screenshots
 
 Stage 1 — program picker. One row per program, color-coded status, indented
-paths underneath:
+paths underneath. A name that appears in several sync-files
+(the app in one, its config in another) is one entry, and a trailing bracket
+group ties variants to their base name — `livesync [agent]` lists under
+`livesync`. Stage 2 sections the merged paths per origin:
 
 ![Stage 1 — program picker](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_1.png)
 
@@ -213,7 +216,7 @@ rather than as an error.
 
 | Field | Where | Meaning |
 |---|---|---|
-| `Program` | block | Group name; blocks sharing it sync together |
+| `Program` | block | Group name; blocks sharing it sync together. A trailing `[…]` lists under the base name in the picker |
 | `Path` | block | Path relative to `Source` (file or directory) |
 | `Source` | either | Absolute base path on this machine |
 | `Target` | either | Absolute base path, or `user@host:/path` for ssh |
@@ -226,6 +229,7 @@ rather than as an error.
 | `Delete` | block | `true` mirrors deletions, with backups |
 | `Cmd` | block | Shell command, run only when bytes actually moved |
 | `Render` | block | `true` substitutes `{{tokens}}` instead of copying |
+| `Verify` | block | `false` skips content verification — for entries too big (see below) |
 
 ### Exclude or Own?
 
@@ -376,9 +380,19 @@ Two properties make this bearable day to day:
 
 `twin status` gives the same verdict without syncing: it runs the dry-runs per
 entry and reports what would flow, what merely differs in timestamp, and what
-changed on the target. Only the picker stays mtime-blind for directory entries
-— it marks them `∘` (unverified) rather than guessing, because the dry-runs
-would make it slow to open.
+changed on the target. The picker's first stage stays mtime-blind for
+directory entries — it marks them `∘` (unverified) rather than guessing,
+because the dry-runs would make it slow to open. Entering a program runs them
+for just that program, so its directory rows show a real verdict.
+
+One escape hatch: `Verify: false` opts an entry out of every content round —
+the md5 checks, the status dry-runs, the picker's verification, the pre-sync
+conflict listing. It exists for entries where the walk itself is the cost: a
+`node_modules` tree on an SMB mount stats tens of thousands of files for one
+verdict. Such an entry stays `∘`/mtime-based, and the picker's second stage
+says so in its header rather than letting the `∘` pass as pending; a sync
+still leaves newer target files alone (`--update` holds), they just aren't
+itemised first.
 
 ## Automation
 
@@ -443,7 +457,7 @@ it differs from the current target, so a `Cmd` hook fires only on a real change.
 ## LiveSync LaunchAgent
 
 ```yaml
-Program: livesync-agent
+Program: livesync [agent]
 Source: "{{src.home}}/Automation/launchd"
 Path: com.ralf.livesync.plist
 Target: "{{dst.mount}}"
