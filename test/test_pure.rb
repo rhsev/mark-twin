@@ -1523,3 +1523,20 @@ class TestBracketConvention < Minitest::Test
     assert_equal ["a", "a [x] b"], merged.map(&:name).sort
   end
 end
+
+class TestRemoteStatParsing < Minitest::Test
+  # "-" is a missing file; an empty mtime is a file whose whole stat chain
+  # failed — unknown, not missing (and not 1970).
+  def test_missing_unknown_and_epoch_are_distinct
+    out = "/a\t-\n/b\t\n/c\t1756500000\n"
+    stats = Twin::Remote.parse_stats(out)
+    assert_equal :missing, stats["/a"]
+    assert_nil stats["/b"]
+    assert stats.key?("/b")
+    assert_equal Time.at(1756500000), stats["/c"]
+  end
+
+  def test_garbage_mtime_reads_as_unknown
+    assert_nil Twin::Remote.parse_stats("/a\t1970-01-01\n")["/a"]
+  end
+end

@@ -114,11 +114,14 @@ module Twin
             j.target_unreachable = true
             next
           end
-          mtime = stats[rpath]
-          j.target_exists = !mtime.nil?
-          j.target_mtime  = mtime
-          j.conflict      = !j.directory && j.source_exists && mtime && j.source_mtime &&
-                            mtime - j.source_mtime >= 60
+          # :missing = not there; nil = there, but the stat chain could not
+          # name an mtime (degrades to unknown, exactly what doctor warns).
+          # A path absent from the answer counts as missing, not as unknown.
+          mtime = stats.fetch(rpath, :missing)
+          j.target_exists = mtime != :missing
+          j.target_mtime  = mtime.is_a?(Time) ? mtime : nil
+          j.conflict      = !j.directory && j.source_exists && j.target_mtime &&
+                            j.source_mtime && j.target_mtime - j.source_mtime >= 60
         end
         verify_remote_file_content(host, host_jobs)
       end

@@ -64,17 +64,26 @@ module Twin
       )
       return nil unless status.success?
 
+      parse_stats(out)
+    rescue Errno::ENOENT
+      nil # ssh not installed
+    end
+
+    # Nur echte Epochen als Zeit werten. Scheitert die ganze stat-Kette, ist
+    # das Feld leer — das ist "unbekannt", nicht 1970. Und unbekannt ist
+    # nicht fehlend: "-" heißt, die Datei ist nicht da; nil heißt, sie ist
+    # da, aber niemand konnte ihre mtime nennen.
+    def parse_stats(out)
       result = {}
       out.each_line do |line|
         path, mtime = line.chomp.split("\t", 2)
         next unless path && mtime
-        # Nur echte Epochen als Zeit werten. Scheitert die ganze stat-Kette,
-        # ist das Feld leer — das ist "unbekannt", nicht 1970.
-        result[path] = mtime.match?(/\A\d+\z/) ? Time.at(mtime.to_i) : nil
+        result[path] =
+          if mtime == "-" then :missing
+          elsif mtime.match?(/\A\d+\z/) then Time.at(mtime.to_i)
+          end
       end
       result
-    rescue Errno::ENOENT
-      nil # ssh not installed
     end
 
     # Checksum many paths in one ssh round-trip, same shape as stat_paths:
