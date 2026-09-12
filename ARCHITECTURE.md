@@ -12,13 +12,11 @@ sync-files (.md)
    Template         substitute {{tokens}} in record fields (no-op without hosts)
       │
       ▼
-   Scanner          load_jobs → list[Job] → group(jobs) → list[Program]
+   Scanner          LoadJobs → []*Job → Group → []*Program
       │
-      ├──▶  CLI       list / status / sync / doctor
+      ├──▶  CLI       list / status / sync / add / log / doctor   (cmd/twin)
       │
-      └──▶  Picker    fzf + apex preview, returns selected Program
-                          │
-                          ▼
+      └──▶  TUI       two-stage table on basekit, preview pane    (cmd/twin)
                           │
                           ▼
                     Conflict   paired dry-runs → files --update would hold
@@ -29,79 +27,79 @@ sync-files (.md)
 
 ## Package layout
 
-```
-lib/twin/
-  version.rb
-  remote.rb     ssh targets: detection, reachability, batched stat, mkdir
-  template.rb   {{token}} substitution + render-file helper
-  config.rb     ~/.config/twin/config.yaml loader; host table → var_map
-  scanner.rb    Job, Program structs; grubber + template + stat → grouped Programs
-  sync.rb       rsync / render execution, mount check, post-sync hook
-  conflict.rb   target-side changes: detection via paired dry-runs, diffs
-  journal.rb    append-only sync journal (~/.local/state/twin/log.jsonl)
-  add.rb        `twin add` — interactive scaffolding of new sync entries
-  picker.rb     fzf wrapper with apex preview
-  cli.rb        subcommand dispatcher
+Module `github.com/rhsev/mark-twin`. The engine is the root package `twin`;
+the command lives in `cmd/twin`.
 
-bin/twin        entrypoint
-test/test_pure.rb
 ```
+version.go    Version and the build stamp the Makefile injects
+remote.go     ssh targets: detection, reachability, batched stat/md5, mkdir
+template.go   {{token}} substitution + render-file helper
+config.go     ~/.config/twin/config.yaml loader; host table → VarMap
+job.go        Job, Program, Status; path joining
+scanner.go    grubber + template + stat → grouped Programs
+sync.go       rsync / render execution, mount check, post-sync hook
+conflict.go   target-side changes: detection via paired dry-runs, diffs
+journal.go    append-only sync journal (~/.local/state/twin/log.jsonl)
+add.go        `twin add`: scaffolding of new sync entries
+preview.go    compact excerpt of a sync-file for one block
+display.go    status icons and colours, MergePrograms, mtime deltas
+json.go       the --json shapes
+
+cmd/twin/
+  main.go         dispatcher, option parsing
+  commands.go     list / status / sync / add / log / doctor
+  tui.go          the TUI model (Bubble Tea)
+  tui_rows.go     table rows, filters, column widths, row colouring
+  tui_preview.go  renderers (apex / glow / bat / plain), program overview
+  tui_exec.go     background commands and the sync hand-off
+```
+
+Tests sit beside the code (`*_test.go`); `go test ./...` runs them. The TUI
+tests are headless: messages go into `Update`, commands are executed
+inline, `View` is inspected as text.
 
 ## Data model
 
-**Job** — one YAML block:
+**Job** (job.go) is one YAML block:
 
 ```
-program, path, description, active, excludes, owned, label, source, target, cmd,
-delete, render, render_outdated, target_path_field, sync_file, verify,
-source_exists, target_exists, source_mtime, target_mtime, conflict,
-directory, content_equal, drift
+Program, Path, Description, Active, Excludes, Owned, Label, Source, Target,
+Cmd, Delete, Render, RenderOutdated, TargetPathField, SyncFile, SkipVerify,
+SourceExists, TargetExists, SourceMtime, TargetMtime, Conflict,
+TargetUnreachable, Directory, ContentEqual, Drift
 ```
 
-`excludes` and `owned` both become `--exclude` (via `Job#all_excludes`); they
-are kept apart so `status` can report intent.
+`Excludes` and `Owned` both become `--exclude` (`Job.AllExcludes`); they are
+kept apart so `status` can report intent. `Verify: false` is stored as
+`SkipVerify`, so a zero-value Job verifies.
 
-mtime is never the verdict, only a pre-filter for file jobs — and even there
-identical bytes under a drifted timestamp clear it (`content_equal`; remote
-targets get one batched md5 round per host). `conflict` is therefore
+mtime is never the verdict, only a pre-filter for file jobs, and even there
+identical bytes under a drifted timestamp clear it (`ContentEqual`; remote
+targets get one batched md5 round per host). `Conflict` is therefore
 content-verified when set. Directory jobs get no mtime judgment at all: a
 directory's mtime moves on every sync and on every excluded file, so
-`Job#status` reports `unverified` until `twin status` fills `drift` by asking
-rsync (`Conflict.drift` — paired dry-runs, itemize classification, checksums
-for timestamp-only candidates). `Verify: false` opts a job out of every
-content round — scanner md5, drift dry-runs, pre-sync conflict detection —
-for entries where the walk itself is the cost; its status stays mtime-based
-(files) or `unverified` (directories).
+`Job.Status` reports `unverified` until `Drift` is filled by asking rsync
+(`DetectDrift`: paired dry-runs, itemize classification, checksums for
+timestamp-only candidates). `Verify: false` opts a job out of every content
+round; its status stays mtime-based (files) or `unverified` (directories).
 
-`Job#status` → one of `disabled / unreachable / both_missing / missing_source /
-missing_target / target_newer / in_sync / source_newer / unverified`. Render
-jobs derive status from content (`render_outdated`), not mtime.
-`Job#target_path` joins `target` with `target_path_field || path`.
+`Job.Status` is one of `disabled / unreachable / both_missing /
+missing_source / missing_target / target_newer / source_newer / unverified /
+in_sync`. Render jobs derive status from content (`RenderOutdated`), not
+mtime. `Job.TargetPath` joins `Target` with `TargetPathField` or `Path`.
+Paths are joined like Ruby's `File.join` (one slash at the seam, nothing
+normalised), so a `Path: "."` stays visible.
 
-**Program** — group of Jobs sharing a `program` name:
+**Program** groups Jobs sharing a `Program` name within one sync-file:
+`Name, Jobs`. `Program.Status` aggregates jobs (worst state wins). The TUI
+and `sync` operate on Programs, not individual Jobs.
 
-```
-name, jobs
-```
-
-`Program#status` aggregates jobs (worst state wins). Selection in the picker
-operates on Programs, not individual Jobs.
-
-**Job order is part of the contract.** Jobs of a Program run in the order their
-YAML blocks appear in the sync-file. Sync-files rely on this — a `Cmd` that
-restarts a service belongs in the last block, so it fires after every path is in
-place. Reorder the jobs and a deploy restarts against half-written state,
-without any error to show for it.
-
-The order is guaranteed at both ends of the pipeline, not merely observed:
-
-- grubber emits records in document order — first block, first record — for all
-  three output formats, pinned by its own `TestBlockOrderFollowsDocument`
-  across `Extract` and `StreamJSONL`.
-- twin preserves it through `filter_map` and `group_by` (insertion order per
-  key), pinned by `test_job_order_follows_document_order`.
-
-Neither side may quietly sort.
+**Job order is part of the contract.** Jobs of a Program run in the order
+their YAML blocks appear in the sync-file. A `Cmd` that restarts a service
+belongs in the last block, so it fires after every path is in place.
+grubber emits records in document order; `Group` keeps first-appearance
+order for programs and document order for jobs, pinned by
+`TestScannerGrouping`. Neither side may quietly sort.
 
 ## Configuration
 
@@ -120,75 +118,80 @@ hosts:
   book: { home: /Users/ralf, git: /Users/ralf/git, mount: /Volumes/ralf }
 ```
 
-`Config#var_map` flattens the host table for the (`host` → `target`) pair into
-`{ "src.home" => …, "dst.home" => …, "dst.mount" => … }` — empty when no hosts
-are configured (templating inert). See the **Templating** section.
+`Config.VarMap` flattens the host table for the (`host` → `target`) pair into
+`{"src.home": …, "dst.home": …, "dst.mount": …}`, empty when no hosts are
+configured (templating inert). The `apex_*` fields are passed to the
+renderer as written and never interpreted by twin.
 
-Environment overrides: `TWIN_SYNC_DIR` (sync_dir), `TWIN_CONFIG` (config path),
-`TWIN_HOST` (host).
+Environment overrides: `TWIN_SYNC_DIR`, `TWIN_CONFIG`, `TWIN_HOST`.
 
 ## Sync-files
 
-Markdown files. Frontmatter is the sync-relationship (source/target). YAML
+Markdown files. Frontmatter is the sync relationship (source/target). YAML
 blocks define paths. grubber merges frontmatter into each block so every
-record is self-contained.
+record is self-contained. Multiple blocks may share the same `Program`.
 
-Multiple blocks may share the same `Program` value — these are treated as
-one logical unit by twin.
+grubber's JSON is decoded with `UseNumber`, so numeric text stays as written.
+A list or mapping where a single value belongs is an error that names the
+block; a block-level `Active` wins over the frontmatter's.
 
 ## Templating
 
-Substitution sits between grubber and `build_job`, so grubber never sees
-`{{tokens}}` and stays untouched. `Scanner.load_jobs` calls
-`Template.substitute_record` on each record's path-bearing fields (`Source`,
-`Target`, `Path`, `Target-Path`, `Exclude`, `Cmd`) using `cfg.var_map`. This
-*must* run before `build_job`, which immediately `stat`s the resolved paths.
-Unknown `{{token}}` → hard error (never sync a half-rendered path).
+Substitution sits between grubber and `BuildJob`, so grubber never sees
+`{{tokens}}`. `LoadJobs` calls `SubstituteRecord` on each record's
+path-bearing fields (`Source`, `Target`, `Path`, `Target-Path`, `Exclude`,
+`Cmd`) using `Config.VarMap`. This must run before `BuildJob`, which
+immediately stats the resolved paths. An unknown `{{token}}` is a hard error
+(never sync a half-rendered path).
 
 Three namespaces, one fixed meaning each:
 
-- `{{src.*}}` — the running host's own paths (read side, `Source:`).
-- `{{dst.mount}}` — where the target is mounted here (write side, `Target:`).
-- `{{dst.*}}` — the target's native paths, used in **rendered file content**.
-
-The mount/native split is the crux: a file written to `/Volumes/ralf/…` but read
-by the target machine must contain `/Users/ralf/…`. Path fields and file content
-draw from different namespaces, so a token never means two things.
+- `{{src.*}}`: the running host's own paths (read side, `Source:`).
+- `{{dst.mount}}`: where the target is mounted here (write side, `Target:`).
+- `{{dst.*}}`: the target's native paths, used in **rendered file content**.
 
 `{{` opens a YAML flow mapping, so templated values must be quoted in the
-sync-file (`Source: "{{src.home}}"`) — as in Ansible. Without a `hosts` table
-`var_map` is empty and substitution is a no-op.
+sync-file (`Source: "{{src.home}}"`). See
+[docs/templating-design.md](docs/templating-design.md) for the rationale.
 
-See [docs/templating-design.md](docs/templating-design.md) for the full
-rationale.
+## TUI
 
-## Picker
+`cmd/twin/tui*.go`, built on [basekit](https://github.com/rhsev/matterbase)
+(`frame`, `input`, `recordtable`, `preview`, `theme`, `exec`). One screen:
+filter on top, table in the middle, preview on the right, status and key
+hints at the bottom.
 
-Two stages:
+1. **Stage 1: programs.** One `recordtable` row per merged program
+   (`MergePrograms`: same name across sync-files becomes one entry,
+   case-insensitive, and a trailing bracket group joins by convention).
+   The merge is display-only; the data model, `status`, `sync -p` and JSON
+   keep the per-file programs. The preview pane shows the program's paths
+   in their status colour. `v` verifies every directory job in the
+   background.
+2. **Stage 2: paths of one program.** Columns: selection (`■`), status,
+   path, mtime delta, `changes`, sync-file. Opening a program verifies its
+   directory jobs (`DetectDrift`, at most four rsync dry-runs in flight);
+   rows update as answers arrive. The preview pane shows the compact excerpt
+   (`ExtractCompact`) rendered by apex, glow or bat, off the main loop and
+   cached per job and pane width. `d` runs a dry run inside the TUI.
 
-1. **Stage 1 — program picker.** Multi-line NUL-separated entries (`--read0`).
-   Each entry has a header (icon, program name, job count, sync-files) and
-   indented body lines (one per job). No preview. Single-select. ESC exits.
-   Same-named programs (case-insensitive) from different sync-files are merged
-   into one entry, and a trailing bracket group joins by convention:
-   `livesync [agent]` merges under `livesync`. A picker-only view
-   (`Picker.merge_programs`); the data model, `status`, `sync -p` and JSON
-   keep the per-file programs. Jobs stay grouped per file in document order,
-   so a file's closing `Cmd` block still fires after its own paths.
-2. **Stage 2 — path multi-picker.** Tab-delimited rows (`id\tdisplay`),
-   `--with-nth=2` hides the `id`. Multi-select via Tab. On open, directory
-   jobs get their drift verified (`Conflict.fill_drift` — affordable for one
-   program, unlike for the whole of stage 1). A merged program's rows are
-   sectioned per sync-file by dim header rows whose id is `-`; they map to no
-   job, so toggling one is inert. Preview pane shows the *compact* view
-   (frontmatter + intro + the heading section containing the YAML block for
-   the highlighted path) from the job's own sync-file, rendered via
-   `apex --plugins -t terminal256`. ESC returns to Stage 1.
+**Evidence survives reloads.** Verification verdicts, dry-run verdicts and
+sync outcomes are keyed by the job's identity (sync-file, program, path),
+not by the Job object a reload replaces. The `changes` column shows the most
+recent of the three; a file's mtime status is the fallback. A synced job
+drops its old verdict and is verified anew.
 
-Compact previews are pre-rendered to per-job tempfiles before fzf launches.
-An `awk` lookup maps `{1}` (the id) → tempfile path. The Tempfile objects
-stay referenced while fzf runs — a GC'd Tempfile unlinks its file under the
-running preview.
+**Syncing hands the terminal back.** `enter` runs the CLI's `syncJobs`
+through `tea.Exec`: same output, journal and conflict prompt as `twin sync`,
+then "press Enter to continue". The per-job outcomes come back into the
+model, the sync-files are reloaded, and the same program reopens with the
+cursor where it was.
+
+Two Bubble Tea details worth knowing: `Init` runs on a copy of the model and
+must not mutate it (the first load's generation is set in the constructor);
+and `bubbles/table` truncates cells with an ANSI-blind width, so rows are
+coloured after rendering (`colorizeRows`), by the status glyph in the first
+cells.
 
 ## CLI
 
@@ -199,110 +202,92 @@ File argument resolution (`twin <arg>` and `--file=<arg>`):
 - path containing `/`   → expand, then:
   - directory           → scan that directory, no filter
   - file                → scan parent directory, filter by basename
-  - neither             → raise "not found: …"
+  - neither             → error "not found: …"
 
-Unknown options (anything starting with `-` that isn't `--help`) print an
-error pointing at `twin --help` and exit 1.
+Unknown options print an error pointing at `twin --help` and exit 1.
+`--help` and `--version` work without a config.
 
 `twin sync` returns exit 1 when any job failed. `--quiet` suppresses output
-for successful no-op jobs (conflicts, errors and real transfers still print);
-`--skip-unavailable` skips unmounted/unreachable targets instead of aborting.
-The combination is the unattended-run mode (launchd/cron).
+for successful no-op jobs; `--skip-unavailable` skips unmounted/unreachable
+targets instead of aborting. The combination is the unattended-run mode.
+A job that moved nothing says `(nothing to transfer)`.
 
-Every non-dry-run job lands in the journal (`Journal.record`): one JSON line
-in `~/.local/state/twin/log.jsonl` (`TWIN_STATE_DIR` overrides the directory)
-with timestamp, program, path, target, `ok`, `changed`, and a truncated error
-line on failure. `twin log [-n N] [--json]` reads it back. Journal write
-failures warn once and never break a sync.
+Every non-dry-run job lands in the journal (`RecordJournal`): one JSON line
+in `~/.local/state/twin/log.jsonl` (`TWIN_STATE_DIR` overrides the
+directory). `twin log [-n N] [--json]` reads it back. Journal write failures
+warn once and never break a sync.
 
-`twin add <path>` (`add.rb`) scaffolds a new entry: it matches the expanded
-path against the token-substituted `Source:` frontmatter of every sync-file
-(files with no or foreign roots drop out), computes `Path:` relative to the
-chosen root, suggests excludes from a fixed list of generated/heavy dirs found
-in the source (`SUGGEST_EXCLUDES`), rejects paths the file already has a
-block for, and appends heading + prose stub + YAML block. With no covering
-sync-file it can create one (frontmatter from prompts). The pure helpers
-(`frontmatter`, `candidates`, `relative_path`, `suggest_excludes`,
-`build_block`) are unit-tested; the prompt flow reads plain stdin, so it is
-scriptable by piping answers.
+`twin add <path>` matches the expanded path against the token-substituted
+`Source:` of every sync-file, computes `Path:` relative to the chosen root,
+suggests excludes from a fixed list of generated/heavy directories, rejects
+paths the file already has a block for, and appends heading, placeholder
+note and YAML block. The prompt flow reads plain stdin, so it is scriptable.
 
-`twin doctor` checks required tools (grubber, rsync, fzf), optional renderers
-(apex, glow, bat), templating (host/target resolve, every `{{token}}` resolves),
-and whether all configured sync targets are mounted. Exits 1 if any required
-check fails.
+`twin doctor` checks required tools (grubber, rsync), optional renderers
+(apex, glow, bat), templating, whether every target is mounted or reachable,
+and what each reachable ssh host provides (`Preflight`). Exits 1 if a
+required check fails.
 
 ## Remote targets
 
-`Target: user@host:/path` (rsync notation; colon before the first slash) makes
-a job remote — `Job#remote?`. Sources stay local, twin pushes.
+`Target: user@host:/path` (rsync notation; colon before the first slash)
+makes a job remote (`IsRemote`). Sources stay local, twin pushes.
 
-- **Stat**: remote paths can't be `File.stat`ed, so `build_job` leaves them
-  "missing" and `Scanner.fill_remote_stats` fills them in afterwards — one
-  `ssh` round-trip per host for all its paths (`Remote.stat_paths`: paths over
-  stdin, `path\tepoch` back; BSD `stat -f %m` with GNU `stat -c %Y` fallback).
-  A failed ssh sets `target_unreachable` → status `:unreachable`; the scan
-  itself never fails on a dead host.
-- **Reachability** replaces the mount check (`Remote.reachable?`,
-  `ssh -o BatchMode=yes … true` — key auth only, never prompts).
-- **rsync** needs no changes: the target string is already in its remote
-  syntax. Parent directories are created via `ssh host mkdir -p` first.
-- **`Cmd`** still runs locally (`sh -c`); acting on the server means writing
-  an `ssh host '…'` command in the sync-file.
-- **`Render: true` + remote raises** at scan time — render reads/writes target
-  content, which twin only does on local (mounted) paths.
+- **Stat**: `BuildJob` leaves remote targets "missing" and `FillRemoteStats`
+  fills them in afterwards, one ssh round-trip per host (`StatPaths`: paths
+  over stdin, `path<TAB>epoch` back; BSD `stat -f`, GNU `stat -c`, then
+  `date -r`). The answer is three-valued: `-` means missing, an empty or
+  unparseable time means present with unknown mtime, and a path absent from
+  the answer counts as missing. A failed ssh sets `TargetUnreachable`; the
+  scan never fails on a dead host.
+- The batch scripts run through `/bin/sh -c '…'` explicitly, so the login
+  shell on the far side does not matter; they contain no single quotes, and
+  a test guards that.
+- **Reachability** replaces the mount check (`ssh -o BatchMode=yes … true`).
+- **rsync** needs no changes; parent directories are created via
+  `ssh host mkdir -p` first.
+- **`Cmd`** still runs locally (`sh -c`).
+- **`Render: true` + remote** is an error at scan time.
 
 ## Sync
 
-Before syncing:
+Before syncing: every unique local target root must be a mount point
+(device differs from its parent's); remote targets must be reachable. Then
+`Conflict.Detect` lists target-side changes whose content differs and asks
+once for the whole program (`--force` overwrites, `--skip-conflicts` leaves
+them; without a terminal and without either flag a real conflict aborts).
 
-1. **Mount check** — every unique local target root must be a mount point
-   (`File.stat.dev != parent.dev`); remote targets must be ssh-reachable.
-   Aborts otherwise.
-2. **Conflict warning** — emits stderr listing jobs where the target is
-   newer than the source. Continues anyway (`rsync --update` skips them).
-
-Then per Job, **rsync path** (non-render):
+Per Job, **rsync path**:
 
 ```
-rsync -av --itemize-changes --update [--delete] [--exclude=...]* src/ tgt/
+rsync -av --itemize-changes --update [--delete] [--exclude=…]* src/ tgt/
 ```
 
-`--delete` is added when the Job has `delete: true` (from `Delete: true`),
-together with `--backup --backup-dir=<target>/.twin-backup/<run-stamp>` —
-deleted and overwritten files are moved aside, not destroyed. The stamp is
-per-process, so one run shares a backup dir; rsync only creates it when it
-actually backs something up. `--exclude=.twin-backup/` protects the backup
-dir from a `Path: "."` sync deleting it. For remote targets the backup dir
-is the path part of the target (it lives on the receiving side).
-`--itemize-changes` makes change detection deterministic: `Sync.transferred?`
-matches itemize lines (`/\A[<>ch*][fdLDS]/` — `>f…`, `cd…`, `*deleting`),
-covering files, directories and deletions, with no scraping of rsync's prose.
+`--delete` comes with `--backup --backup-dir=<target>/.twin-backup/<stamp>`;
+one stamp per process. `--exclude=.twin-backup/` keeps a `Path: "."` sync
+from deleting its own backups. `--itemize-changes` makes change detection
+deterministic (`Transferred`: `>f…`, `cd…`, `*deleting`). `Cmd` runs via
+`sh -c` only when something was transferred. When a job has a known
+conflict and nothing transferred, the output notes
+`skipped: target is newer, source not synced`.
 
-If `Cmd` is set, it runs via `sh -c` after rsync — but only when something was
-actually transferred. No-op syncs (target up to date, or target newer and
-skipped by `--update`) leave the hook silent. On failure the exit code is
-included in the output and the job is marked failed.
+**Render path** (`Render: true`, `RenderJob`): read source, substitute
+`{{dst.*}}` in the content, compare against the current target bytes, write
+only if they differ; `changed` drives the same `Cmd` gate.
 
-When a job has a known conflict (`target_newer`) and nothing transferred, the
-output notes `"skipped: target is newer, source not synced"`.
-
-**Render path** (`render: true`) — `Sync.render_job`. Templates can't be
-rsync'd byte-for-byte, so instead: read source, substitute `{{dst.*}}` in the
-content, compare against the current target bytes, write only if they differ.
-`changed` drives the same `Cmd` gate. Content-hash comparison (not mtime)
-sidesteps the `--update` trap — a freshly rendered temp is always "newer".
-Render is file-only; a directory source is an error. `twin status` mirrors this:
-render-job status comes from the same content comparison (`render_outdated`),
-so a stale target with a matching mtime is still flagged `source_newer`.
+Subprocesses that fail to *start* (rsync, diff, a hook) are errors, never a
+clean verdict: `DetectDrift` returns the error and `twin status` aborts;
+`Diff` says "diff unavailable" instead of "no textual difference". A stat
+failure other than "not found" or "permission denied" surfaces with the
+block named instead of reading as a missing file.
 
 ## External dependencies
 
-| Tool      | Purpose                                    |
-|-----------|--------------------------------------------|
-| `grubber` | Markdown + YAML block extraction           |
-| `rsync`   | File transfer                              |
-| `fzf`     | Interactive selection                      |
-| `apex`    | Markdown preview rendering in the terminal |
+| Tool      | Purpose                                            |
+|-----------|----------------------------------------------------|
+| `grubber` | Markdown + YAML block extraction (shell-out, JSON) |
+| `rsync`   | File transfer                                      |
+| `apex`, `glow`, `bat` | optional preview rendering, in that order |
 
-twin has no runtime gem dependencies — only stdlib (`yaml`, `json`,
-`optparse`, `open3`, `fileutils`).
+Go modules: `gopkg.in/yaml.v3` (config, frontmatter), `charmbracelet/bubbletea`
+and `lipgloss`, and `github.com/rhsev/matterbase` for basekit.

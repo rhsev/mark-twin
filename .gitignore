@@ -1,9 +1,12 @@
 .DS_Store
 *.gem
-/Gemfile.lock
-/coverage/
-/pkg/
 /tmp/
 NOTES.md
 IDEAS.md
 AUFTRAG-*.md
+
+# Go build output (anchored: cmd/twin/ is source)
+/twin
+/twin-*
+go.work
+go.work.sum

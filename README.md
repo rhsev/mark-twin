@@ -1,13 +1,13 @@
 # twin
 
-[![Gem Version](https://img.shields.io/gem/v/mark-twin.svg)](https://rubygems.org/gems/mark-twin)
+[![Release](https://img.shields.io/github/v/release/rhsev/mark-twin)](https://github.com/rhsev/mark-twin/releases)
 [![Tests](https://github.com/rhsev/mark-twin/actions/workflows/test.yml/badge.svg)](https://github.com/rhsev/mark-twin/actions/workflows/test.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Sync configuration between Macs (or to any host you can reach over ssh) from
 self-documenting Markdown files. Designed for informed, interactive syncing.
 
-A sync-file is a normal Markdown document. The prose is for you, or for an AI
+A sync-file is a normal Markdown document. The notes are for you, or for an AI
 assistant. twin only uses the fenced YAML blocks:
 
 ````markdown
@@ -20,7 +20,7 @@ Target: admin@macbook:/Users/admin
 ## Fish Shell
 
 Shell config, including completions and abbreviations. `local.fish` stays
-machine-specific, the MacBook keeps its own.
+machine-specific, the MacBook keeps its own configuration.
 
 ```yaml
 Program: Fish Shell
@@ -30,60 +30,62 @@ Own: conf.d/local.fish
 ```
 ````
 
-twin runs when you ask, not in the background. It syncs what is unambiguous;
-where the target has changes of its own, it stops and asks, diff in hand
-(verified against content, never guessed from timestamps). At its core it's
-just `rsync`, but a year later the file still tells you *why* you did it that
-way.
+twin runs selected configuration updates. Where the target has changes of
+its own, it stops and asks (verified against content, never guessed from
+timestamps). At its core it's just `rsync`, but a year later the notes in the
+file still tell you *why* you did it that way.
 
-That is the whole idea, and for most entries it stays as small as the excerpt
-above. The rest of this README is long because twin also covers more complex
+That is the whole idea, and for most entries it stays as small as the example
+above. The rest of this README covers more complex
 cases: files that are specific to the other computer, files that have changed
 on both sides since the last sync, and paths that differ per host. If you are
-wondering how this differs from chezmoi and its kind:
+wondering how the concept differs from chezmoi and its kind:
 [Alternatives](#alternatives).
 
 ## Why Markdown
 
 - **You can read it later.** The reason a path is synced sits next to the
-  path, in prose.
-- **Machines can read it too.** The YAML blocks are extracted by
-  [grubber](https://github.com/rhsev/grubber), so the same file can feed other
-  tools, not just twin.
+  path, in the notes.
+- **Machines can read it too.** The YAML blocks can be extracted by
+  [grubber](https://github.com/rhsev/grubber).
 - **It stays editable by hand.** No generated state, no database. Add a block
-  in your editor and twin picks it up.
-- **Ask your AI to help you write it.** Markdown with YAML blocks is what
-  language models are good at. Show this README and an existing sync-file,
+  in your editor and twin can use it.
+- **Ask your AI to help you write it.** Show this README and an existing sync-file,
   describe the next entry, and what comes back is valid for grubber and still
   readable by you.
 
 ## Screenshots
 
-Stage 1 — program picker. One row per program, color-coded status, indented
-paths underneath. A name that appears in several sync-files
-(the app in one, its config in another) is one entry, and a trailing bracket
-group ties variants to their base name — `livesync [agent]` lists under
-`livesync`. Stage 2 sections the merged paths per origin:
+Stage 1 — one row per program: status, name, active paths, and the
+sync-files it comes from. A name that appears in several sync-files (the app
+in one, its config in another) is one entry, and a trailing bracket group ties
+variants to their base name — `livesync [agent]` lists under `livesync`. The
+pane on the right lists the program's paths, colour-coded by status:
 
-![Stage 1 — program picker](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_1.png)
+![Stage 1 — programs](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_1.png)
 
-Stage 2 — multi-select over the paths of one program. The right pane shows a
-compact preview of the relevant sync-file section, rendered by apex:
+Stage 2 — the paths of one program, with a selection column. `file` names
+each path's origin, `changes` says what a sync would move and, after one, what it moved. The right pane
+shows the relevant sync-file section, rendered by apex:
 
 ![Stage 2 — a rendered LaunchAgent entry with apex preview](https://raw.githubusercontent.com/rhsev/mark-twin/main/docs/stage_2_livesync.png)
 
 ## Install
 
+twin is a single binary. Download the one for your platform from the
+[releases](https://github.com/rhsev/mark-twin/releases) — `twin-macos-arm64`,
+`twin-macos-amd64`, `twin-linux-amd64`, `twin-linux-arm64` — and put it in
+your `PATH` as `twin`. Or, with Go installed:
+
 ```bash
-gem install mark-twin
-brew install fzf
+go install github.com/rhsev/mark-twin/cmd/twin@latest
 ```
 
 Plus [grubber](https://github.com/rhsev/grubber/releases), a small Go binary —
 download it and put it in your `PATH`. `rsync` ships with macOS.
 
 Optional: one of `apex`, `glow` or `bat` for the preview pane (tried in that
-order, `cat` if none are present). `twin doctor` reports what it found.
+order, plain text if none are present). `twin doctor` reports what it found.
 
 <details>
 <summary>From source</summary>
@@ -91,15 +93,29 @@ order, `cat` if none are present). `twin doctor` reports what it found.
 ```bash
 git clone https://github.com/rhsev/mark-twin.git
 cd mark-twin
-gem build mark-twin.gemspec
-gem install ./mark-twin-*.gem
+make build            # ./twin
+make install          # copies to /usr/local/bin (PREFIX=… to change)
 ```
+
+Needs Go 1.26.5 or newer.
+</details>
+
+<details>
+<summary>Coming from the Ruby gem</summary>
+
+Versions up to 0.6.1 were a Ruby gem. Sync-files, `config.yaml`, the journal
+and every command are unchanged; only the installation differs:
+
+```bash
+gem uninstall mark-twin
+```
+
+then install the binary as above. `fzf` is no longer needed.
 </details>
 
 ## Getting started
 
-**1. Choose ssh or a mounted volume.** `Target:` takes either form, and
-neither is the special case:
+**1. Choose ssh or a mounted volume.** `Target:` takes either form:
 
 ```yaml
 Target: admin@macbook:/Users/admin              # over ssh
@@ -133,7 +149,7 @@ $EDITOR ~/Sync/home.md      # adjust Source: and Target:
 `twin add ~/.config/fish` does the same interactively, if you prefer prompts to
 an editor — it finds the matching sync-file, derives the relative path,
 suggests excludes for what it sees in the directory, and appends a block with a
-prose stub.
+placeholder note.
 
 **4. Check first:**
 
@@ -143,14 +159,12 @@ twin sync --dry-run      # what a sync would do, without doing it
 twin                     # interactive: pick a program, pick paths, Enter
 ```
 
-That is the whole loop. Everything below is detail you can come back for.
-
 ## Everyday commands
 
 ```bash
-twin                         # picker — all programs across all sync-files
-twin home.md                 # picker — one sync-file in sync_dir (by name)
-twin ./some/dir/             # picker — all sync-files in a directory
+twin                         # TUI — all programs across all sync-files
+twin home.md                 # TUI — one sync-file in sync_dir (by name)
+twin ./some/dir/             # TUI — all sync-files in a directory
 twin list                    # plain listing
 twin status                  # what a sync would change, content-verified
 twin sync -p grubber         # sync one program by name pattern
@@ -167,14 +181,36 @@ A file argument without `/` is matched by substring against sync-file names in
 `sync_dir`; anything containing `/` is treated as a path, file or directory.
 
 By default a sync prints only what changed — the lines below, plus anything a
-`Cmd` produced and any error. `-v` adds rsync's headers and transfer summaries
-back. The bare `twin` picker needs a terminal and says so instead of waiting
+`Cmd` produced and any error. A job that moved nothing says so:
+`(nothing to transfer)`. `-v` adds rsync's headers and transfer summaries
+back. The bare `twin` command needs a terminal and says so instead of waiting
 when there is none, so cron jobs and `ssh host twin …` fail with a usable
 message rather than hanging.
 
 Every job is journaled to `~/.local/state/twin/log.jsonl` — one JSON line with
 timestamp, program, path and outcome. `twin sync` exits non-zero if any job
 failed.
+
+### The text user interface (TUI)
+
+Two stages, one screen: a filter on top, the table in the middle, the preview
+on the right, status and keys at the bottom.
+
+| Stage 1 — programs | | Stage 2 — paths of one program | |
+|---|---|---|---|
+| `enter` | open the program | `space` / `tab` | toggle the path |
+| `/` | filter by name | `a` / `u` | select all / none |
+| `v` | verify all directories in the background | `enter` | sync the selection (or the current row) |
+| `r` | reload the sync-files | `d` | dry-run the selection, verdict onto the row |
+| `p` | show/hide the preview | `v` | re-verify the directories |
+| `J` / `K` | scroll the preview | `esc` | back to the programs |
+| `esc` / `q` | quit | `q` | quit |
+
+Opening a program verifies its directory entries — the `∘` rows turn into a
+real verdict as rsync answers, and the `changes` column says what a sync would
+move. A sync hands the terminal back: the same output, journal and conflict
+prompt as `twin sync`, then `Enter` returns to the program with fresh
+statuses.
 
 ### Reading a dry-run
 
@@ -195,10 +231,12 @@ Two rules cover most of it: a leading `>` means data would move and a leading
 content changed rather than just a timestamp.
 
 Only the `>` and `*deleting` lines appear by default — the `.` ones are what
-`-v` adds back, along with rsync's headers and byte counts. So a job that
-prints nothing under its name moved nothing, and a run full of `>f..t......`
-lines is twin re-stamping files whose contents already match, which is normal
-after syncing a tree in both directions.
+`-v` adds back, along with rsync's headers and byte counts. A job with nothing
+to move prints `(dry-run: nothing would change)`, and a run full of
+`>f..t......` lines is twin re-stamping files whose contents already match,
+which is normal after syncing a tree in both directions. In the user interface, `d`
+runs the same dry-run for the selected paths and keeps each verdict on its
+row.
 
 ## Sync-files
 
@@ -214,17 +252,18 @@ together, and **run in the order they appear in the file**.
 
 Field names are capitalised English. An unknown key is ignored silently and a
 missing `Active` counts as `0`, so a typo shows up as an entry that never syncs
-rather than as an error.
+rather than as an error. A list where a single value belongs
+(`Exclude: [a, b]` instead of `Exclude: a, b`) is an error that names the block.
 
 | Field | Where | Meaning |
 |---|---|---|
-| `Program` | block | Group name; blocks sharing it sync together. A trailing `[…]` lists under the base name in the picker |
+| `Program` | block | Group name; blocks sharing it sync together. A trailing `[…]` lists under the base name in the TUI |
 | `Path` | block | Path relative to `Source` (file or directory) |
 | `Source` | either | Absolute base path on this machine |
 | `Target` | either | Absolute base path, or `user@host:/path` for ssh |
 | `Target-Path` | block | Path under `Target`, when it differs from `Path` |
 | `Active` | either | `1` syncs, `0` skips. Default `0` |
-| `Description` | block | Shown in listings and the picker |
+| `Description` | block | Shown in listings and the TUI |
 | `Label` | either | Free-text grouping, filterable via `--label` |
 | `Exclude` | block | Comma-separated paths that are not part of the sync |
 | `Own` | block | Comma-separated paths the **target** owns |
@@ -264,6 +303,14 @@ re-link binaries after `bin/`. For a **restart**, put the command in the
 service back before the remaining paths are written. The same command repeated
 across blocks restarts repeatedly, for the same reason. One command, last block.
 
+There is no hook *before* a sync, and by design: rsync writes each file beside
+the old one and renames it into place, so a running process keeps the file it
+opened and notices nothing. Stopping a service first buys nothing; restarting
+it afterwards is what makes the change take effect, and that is what `Cmd` is
+for. A file the running process itself writes to, a database above all, is
+not a job for twin's standard means: use the database's own dump or
+replication instead.
+
 ### Delete: mirroring removals
 
 `Delete: true` adds `--delete`, so files removed from the source disappear on
@@ -273,7 +320,7 @@ pruning occasionally. It applies to `Delete` jobs only.
 
 ## Mounted volume or ssh
 
-Both are first-class. `twin status`, the picker, `Exclude`/`Own`, `Delete` and
+Both are first-class. `twin status`, the user interface, `Exclude`/`Own`, `Delete` and
 `Cmd` behave identically; remote paths are stat'ed (and, where timestamps
 disagree, checksummed via `md5`/`md5sum`) in batched ssh round-trips per host,
 and an unreachable host shows as `?` instead of failing the scan.
@@ -310,25 +357,31 @@ Target: ralf@server:/srv/www
 ---
 ```
 
-## Two shapes of sync
+## When the target has changed too
 
-The mechanics are the same either way, but what you *mean* differs, and it
-decides how you should answer everything below.
+A sync has a direction: the source wins. But targets get edited — a quick fix
+made on the server at midnight, a config tweaked where it runs. Twin looks for
+that before it moves the files, and asks once for the whole program:
 
-**A mirror.** Both machines are yours, both get worked on, and each direction
-is its own entry with `Source:` and `Target:` swapped. Neither side is more
-right than the other; a file being newer over there is ordinary, and the
-question is which version you want. This is what the two-Macs examples in this
-README describe.
+```
+target has changed since the last sync — 1 file(s) differ:
+  ! app/code.rb (target 2h newer)
+syncing would replace them with the source version.
 
-**A deploy.** One side is the truth and the other only runs it — a server, a
-container, a NAS. The rule that makes this work is short: *the target is never
-a source.* Nothing gets edited over there, so anything that shows up as a
-target-side change means the rule was broken, and that is worth stopping for
-rather than waving through.
+overwrite these on the target and sync? [y]es / [d]iff / [n]o (abort)
+```
 
-Write the rule into the sync-file itself, in the prose where the next person —
-you, in a year — will read it:
+`d` prints a unified diff per file, then asks again. `n` aborts the entire
+program — nothing is written, so you never end up with half a deploy applied.
+
+Whether a change over there is normal depends on what the target is. A
+machine you also work on — a second Mac — gets edited on both sides; a newer
+file over there is ordinary, and the prompt is where you decide which version
+you want. A machine that only runs what you deploy — a server, a container, a
+NAS — should never change on its own: *the target is never a source*, and a
+`target_newer` there means the rule was broken, which is worth stopping for
+rather than waving through. Write the rule into the sync-file itself, in the
+notes where the next person — you, in a year — will read it:
 
 ````markdown
 ---
@@ -345,31 +398,6 @@ source.** A `target_newer` in `twin status` is therefore not a normal
 state — find out who edited over there before overwriting it.
 ````
 
-The practical difference is which answer you pre-arrange for automation. On a
-mirror there is rarely a right answer in advance, so run those syncs by hand,
-or with `--skip-conflicts` and read the log. On a deploy `--force` matches the
-model — the source *is* the truth — but it discards a target-side edit without
-showing it to you first. That is precisely the trade the prompt exists to make
-deliberate, so prefer `--skip-conflicts` for scheduled runs and keep `--force`
-for the moment you have looked and decided.
-
-## When the target has changed too
-
-A sync has a direction: the source wins. But targets get edited — a quick fix
-made on the server at midnight, a config tweaked where it runs. Twin looks for
-that before it moves the first byte, and asks once for the whole program:
-
-```
-target has changed since the last sync — 1 file(s) differ:
-  ! app/code.rb (target 2h newer)
-syncing would replace them with the source version.
-
-overwrite these on the target and sync? [y]es / [d]iff / [n]o (abort)
-```
-
-`d` prints a unified diff per file, then asks again. `n` aborts the entire
-program — nothing is written, so you never end up with half a deploy applied.
-
 Two properties make this bearable day to day:
 
 - **Content, not timestamps.** A file that is merely newer on the target with
@@ -382,19 +410,19 @@ Two properties make this bearable day to day:
 
 `twin status` gives the same verdict without syncing: it runs the dry-runs per
 entry and reports what would flow, what merely differs in timestamp, and what
-changed on the target. The picker's first stage stays mtime-blind for
+changed on the target. The TUI's first stage stays mtime-blind for
 directory entries — it marks them `∘` (unverified) rather than guessing,
-because the dry-runs would make it slow to open. Entering a program runs them
-for just that program, so its directory rows show a real verdict.
+because the dry-runs would make it slow to open. Opening a program runs them
+for just that program, and `v` runs them for everything in the background
+while you keep working.
 
 One escape hatch: `Verify: false` opts an entry out of every content round —
-the md5 checks, the status dry-runs, the picker's verification, the pre-sync
+the md5 checks, the status dry-runs, the TUI's verification, the pre-sync
 conflict listing. It exists for entries where the walk itself is the cost: a
 `node_modules` tree on an SMB mount stats tens of thousands of files for one
-verdict. Such an entry stays `∘`/mtime-based, and the picker's second stage
-says so in its header rather than letting the `∘` pass as pending; a sync
-still leaves newer target files alone (`--update` holds), they just aren't
-itemised first.
+verdict. Such an entry stays `∘`/mtime-based, and the TUI says so rather
+than letting the `∘` pass as pending; a sync still leaves newer target files
+alone (`--update` holds), they just aren't itemised first.
 
 ## Automation
 
@@ -409,6 +437,15 @@ twin sync --quiet --skip-unavailable --skip-conflicts
 - `--skip-unavailable` — a laptop that isn't docked is skipped, not an error.
 - `--skip-conflicts` — leave target-side changes alone and sync the rest.
   Use `--force` instead to overwrite them.
+
+Which of the two to pre-arrange depends on the target. On a machine you also
+work on there is rarely a right answer in advance, so run those syncs by hand,
+or with `--skip-conflicts` and read the log. On a machine that only runs what
+you deploy, `--force` matches the model — the source *is* the truth — but it
+discards a target-side edit without showing it to you first. That is precisely
+the trade the prompt exists to make deliberate, so prefer `--skip-conflicts`
+for scheduled runs and keep `--force` for the moment you have looked and
+decided.
 
 Without a terminal and without one of those two flags, a real conflict aborts
 the run with exit code 1 rather than picking an answer for you. Output and a
@@ -486,7 +523,7 @@ global_excludes:
 
 # Optional preview rendering (apex):
 # apex_theme: default
-# apex_width: 80
+# apex_width: 80                  # default: the width of the preview pane
 # apex_code_highlight: monokai
 # apex_code_highlight_theme: dark
 ```
@@ -505,7 +542,7 @@ its kind:
 |---|---|---|
 | Focus | deliberate sync between a few machines | converging many machines from one repo |
 | Model | interactive: pick, preview, sync | git: commit, push, apply |
-| Where the *why* lives | prose next to the YAML block, same file | commit messages, separate docs |
+| Where the *why* lives | notes next to the YAML block, same file | commit messages, separate docs |
 | Conflicts | stops and asks, diff in hand | three-way merge on apply |
 | Templating | host paths (`{{dst.home}}`) | full engine, secrets from password managers |
 | Scale | two or three Macs/servers | dozens of machines |
@@ -517,15 +554,17 @@ overwritten.
 
 ## Design
 
-Sync instructions and their context in one place. No TUI framework: `fzf` does
-the interactive part, `apex` the rendering, `rsync` the work.
+Sync instructions and their context in one place. The engine is a small Go
+package; the user interface sits on top of it, built with
+[basekit](https://github.com/rhsev/matterbase), the Bubble Tea foundation
+shared with matterbase and taskbase. `apex` renders, `rsync` does the work.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the data model and internals.
 
 ## Tests
 
 ```bash
-rake test
+make test
 ```
 
 ---
