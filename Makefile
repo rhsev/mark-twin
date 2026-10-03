@@ -3,7 +3,7 @@ BINDIR  ?= $(HOME)/bin
 PREFIX  ?= /usr/local
 # Build stamp shown by `twin --version`, so a running build is identifiable.
 STAMP   := $(shell date +%Y-%m-%dT%H:%M)
-LDFLAGS := -X github.com/rhsev/mark-twin.Build=$(STAMP)
+LDFLAGS := -X github.com/rhsev/mark-twin/internal/twin.Build=$(STAMP)
 
 .PHONY: build release link unlink install uninstall test clean
 

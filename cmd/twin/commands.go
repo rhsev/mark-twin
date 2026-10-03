@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 const stampLayout = "2006-01-02 15:04:05"

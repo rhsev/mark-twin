@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rhsev/matterbase/basekit/theme"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 // Messages the TUI's background work reports back with. Every message

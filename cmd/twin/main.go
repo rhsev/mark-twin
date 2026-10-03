@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 const usage = `twin — sync configuration files between machines

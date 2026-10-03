@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 // The TUI is driven headlessly: messages go into Update, commands are

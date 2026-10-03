@@ -27,23 +27,25 @@ sync-files (.md)
 
 ## Package layout
 
-Module `github.com/rhsev/mark-twin`. The engine is the root package `twin`;
-the command lives in `cmd/twin`.
+Module `github.com/rhsev/mark-twin`. The engine is package `twin` in
+`internal/twin` — internal because only the command uses it, so its exported
+names are no public API under semver; the command lives in `cmd/twin`.
 
 ```
-version.go    Version and the build stamp the Makefile injects
-remote.go     ssh targets: detection, reachability, batched stat/md5, mkdir
-template.go   {{token}} substitution + render-file helper
-config.go     ~/.config/twin/config.yaml loader; host table → VarMap
-job.go        Job, Program, Status; path joining
-scanner.go    grubber + template + stat → grouped Programs
-sync.go       rsync / render execution, mount check, post-sync hook
-conflict.go   target-side changes: detection via paired dry-runs, diffs
-journal.go    append-only sync journal (~/.local/state/twin/log.jsonl)
-add.go        `twin add`: scaffolding of new sync entries
-preview.go    compact excerpt of a sync-file for one block
-display.go    status icons and colours, MergePrograms, mtime deltas
-json.go       the --json shapes
+internal/twin/
+  version.go    Version and the build stamp the Makefile injects
+  remote.go     ssh targets: detection, reachability, batched stat/md5, mkdir
+  template.go   {{token}} substitution + render-file helper
+  config.go     ~/.config/twin/config.yaml loader; host table → VarMap
+  job.go        Job, Program, Status; path joining
+  scanner.go    grubber + template + stat → grouped Programs
+  sync.go       rsync / render execution, mount check, post-sync hook
+  conflict.go   target-side changes: detection via paired dry-runs, diffs
+  journal.go    append-only sync journal (~/.local/state/twin/log.jsonl)
+  add.go        `twin add`: scaffolding of new sync entries
+  preview.go    compact excerpt of a sync-file for one block
+  display.go    status icons and colours, MergePrograms, mtime deltas
+  json.go       the --json shapes
 
 cmd/twin/
   main.go         dispatcher, option parsing

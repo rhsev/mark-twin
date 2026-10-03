@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rhsev/matterbase/basekit/recordtable"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 // Column keys double as header titles — recordtable renders the key.

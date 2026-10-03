@@ -16,7 +16,7 @@ import (
 	"github.com/rhsev/matterbase/basekit/recordtable"
 	"github.com/rhsev/matterbase/basekit/theme"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 // The picker, on basekit: stage 1 lists the merged programs, stage 2 the

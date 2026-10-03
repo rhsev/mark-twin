@@ -13,7 +13,7 @@ import (
 	bkexec "github.com/rhsev/matterbase/basekit/exec"
 	"github.com/rhsev/matterbase/basekit/theme"
 
-	twin "github.com/rhsev/mark-twin"
+	"github.com/rhsev/mark-twin/internal/twin"
 )
 
 // renderer turns a job's compact sync-file excerpt into ANSI text wrapped
