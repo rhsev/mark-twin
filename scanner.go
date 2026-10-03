@@ -258,6 +258,20 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 		return nil, fmt.Errorf("%s: Render is not supported for remote targets (%s)", fields["Program"], target)
 	}
 
+	// Sudo hands the sync root rights on the target, and Delete prunes.
+	// Combined, a wrong Path lets rsync clean up a system directory as root
+	// — so the combination is refused here, not warned about in a README.
+	// Whoever needs both has to argue the case in code.
+	sudo := r["Sudo"] == true
+	if sudo && r["Delete"] == true {
+		return nil, fmt.Errorf("%s: Sudo and Delete must not share a block", ctx)
+	}
+	// --rsync-path only changes the program the far side runs; on a local
+	// target Sudo would silently do nothing, which reads as "worked".
+	if sudo && !remote {
+		return nil, fmt.Errorf("%s: Sudo needs a remote target (%s is local)", ctx, target)
+	}
+
 	tp := path
 	if targetPathField != "" {
 		tp = targetPathField
@@ -313,6 +327,7 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 		Target:          target,
 		Cmd:             fields["Cmd"],
 		Delete:          r["Delete"] == true,
+		Sudo:            sudo,
 		Render:          render,
 		RenderOutdated:  renderOutdated,
 		TargetPathField: targetPathField,

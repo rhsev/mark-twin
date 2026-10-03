@@ -47,6 +47,11 @@ type Job struct {
 	Target string
 	Cmd    string
 	Delete bool
+	// Sudo: the far side runs rsync through sudo and the files land as
+	// root:root — for targets only root may write (/usr/local/bin on
+	// Ubuntu). Scan-time rules: remote targets only, and never together
+	// with Delete in one block.
+	Sudo   bool
 	Render bool
 	// RenderOutdated is nil unless the job renders; then it says whether the
 	// target differs from the rendered template.

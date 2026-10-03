@@ -268,6 +268,7 @@ rather than as an error. A list where a single value belongs
 | `Exclude` | block | Comma-separated paths that are not part of the sync |
 | `Own` | block | Comma-separated paths the **target** owns |
 | `Delete` | block | `true` mirrors deletions, with backups |
+| `Sudo` | block | `true` writes through `sudo rsync` as `root:root` — remote targets only, never with `Delete` |
 | `Cmd` | block | Shell command, run only when bytes actually moved |
 | `Render` | block | `true` substitutes `{{tokens}}` instead of copying |
 | `Verify` | block | `false` skips content verification — for entries too big (see below) |
@@ -317,6 +318,22 @@ replication instead.
 the target too. Deleted and overwritten files are moved to
 `<target>/.twin-backup/<timestamp>/` rather than destroyed — a safety net worth
 pruning occasionally. It applies to `Delete` jobs only.
+
+### Sudo: privileged targets
+
+`Sudo: true` makes the far side run `rsync` through `sudo`, for targets only
+root may write — `/usr/local/bin` on Ubuntu, say. Files land as `root:root`
+(`--chown`), because `-a` would otherwise transplant the source UID onto the
+target, where it belongs to nobody — yet. Reading needs no privilege on a
+world-readable target, so `twin status` compares against the real files and
+drift detection stays honest.
+
+The target host needs passwordless sudo for the connecting user; `twin
+doctor` checks `sudo -n` wherever a `Sudo:` job points, because the sync
+itself would fail only at write time. Two rules are enforced at scan time:
+`Sudo` needs a remote target, and it never shares a block with `Delete` —
+root rights plus `--delete` plus one wrong `Path` is how a system directory
+gets cleaned up. Whoever needs both has to argue the case in code.
 
 ## Mounted volume or ssh
 

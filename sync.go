@@ -185,7 +185,7 @@ func RunJob(cfg *Config, job *Job, dryRun, force bool) (bool, string, bool) {
 	if job.IsRemote() {
 		host, rpath := SplitRemote(tgt)
 		dir := path.Dir(rpath)
-		if !dryRun && !MkdirP(host, dir) {
+		if !dryRun && !MkdirP(host, dir, job.Sudo) {
 			return false, fmt.Sprintf("ssh: could not create %s on %s", dir, host), false
 		}
 	} else if err := os.MkdirAll(filepath.Dir(tgt), 0o755); err != nil {
@@ -239,6 +239,13 @@ func RsyncArgs(cfg *Config, job *Job, dryRun, force bool) []string {
 	if job.Delete {
 		args = append(args, "--delete")
 		args = append(args, BackupArgs(job)...)
+	}
+	if job.Sudo {
+		// sudo rsync on the far side writes where only admin's sudo may.
+		// --chown pins ownership: -a would transplant the source UID onto
+		// the target (UNKNOWN:root on a host without that UID — and a user
+		// created with it later would own a script that runs as root).
+		args = append(args, "--rsync-path=sudo rsync", "--chown=root:root")
 	}
 	if dryRun {
 		args = append(args, "--dry-run")

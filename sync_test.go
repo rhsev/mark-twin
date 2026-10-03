@@ -155,6 +155,30 @@ func TestRsyncForceFlag(t *testing.T) {
 	}
 }
 
+// Sudo adds exactly the two flags the VPS probe of 2026-09-27 established:
+// sudo rsync on the far side, and --chown because -a would transplant the
+// source UID (UNKNOWN:root on a host without a UID 501 — and a user created
+// with it later would own a script that runs as root).
+func TestRsyncSudoArgs(t *testing.T) {
+	cfg := plainConfig()
+	job := func(mod func(*Job)) *Job {
+		return testJob(func(j *Job) {
+			j.Path, j.Target, j.Sudo = "watchdog", "admin@vps:/usr/local/bin", true
+			if mod != nil {
+				mod(j)
+			}
+		})
+	}
+	args := RsyncArgs(cfg, job(nil), false, false)
+	if !has(args, "--rsync-path=sudo rsync") || !has(args, "--chown=root:root") {
+		t.Errorf("Sudo must add rsync-path and chown: %v", args)
+	}
+	args = RsyncArgs(cfg, job(func(j *Job) { j.Sudo = false }), false, false)
+	if find(args, "--rsync-path=") != "" || find(args, "--chown=") != "" {
+		t.Errorf("no Sudo, no privileged flags: %v", args)
+	}
+}
+
 func renderCfg() *Config {
 	cfg := NewConfig()
 	cfg.SyncDir = "/tmp"

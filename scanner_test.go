@@ -109,6 +109,30 @@ func TestScannerBuildJob(t *testing.T) {
 	}
 }
 
+// Sudo gives the sync root rights on the target, so the scanner enforces its
+// two rules instead of documenting them: never combined with Delete (a wrong
+// Path would let rsync prune a system directory as root), and only on remote
+// targets (--rsync-path does nothing locally, which would read as "worked").
+func TestScannerSudo(t *testing.T) {
+	j := mustBuild(t, withRecord(map[string]any{"Sudo": true, "Target": "admin@vps:/usr/local/bin"}))
+	if !j.Sudo {
+		t.Error("Sudo: true must set the field")
+	}
+	if j := mustBuild(t, withRecord(map[string]any{"Target": "admin@vps:/usr/local/bin"})); j.Sudo {
+		t.Error("Sudo defaults to false")
+	}
+
+	_, err := BuildJob(withRecord(map[string]any{"Sudo": true, "Delete": true, "Target": "admin@vps:/srv"}), nil)
+	if err == nil || !strings.Contains(err.Error(), "Sudo and Delete") {
+		t.Errorf("Sudo+Delete must be refused at scan time, got: %v", err)
+	}
+
+	_, err = BuildJob(withRecord(map[string]any{"Sudo": true}), nil)
+	if err == nil || !strings.Contains(err.Error(), "remote target") {
+		t.Errorf("Sudo on a local target must be refused, got: %v", err)
+	}
+}
+
 // fileJobFor builds a real file pair whose target mtime is offset from the
 // source's.
 func fileJobFor(t *testing.T, offset time.Duration, srcContent, tgtContent string) *Job {

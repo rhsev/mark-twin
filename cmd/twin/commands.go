@@ -580,6 +580,7 @@ func cmdDoctor(cfg *twin.Config) error {
 				}
 			}
 			ok = doctorRemoteTools(reachable) && ok
+			ok = doctorSudoHosts(programs, seen) && ok
 		}
 	}
 
@@ -609,6 +610,43 @@ func uniqueTargets(programs []*twin.Program) []string {
 func toolAvailable(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
+}
+
+// doctorSudoHosts checks passwordless sudo wherever a Sudo: job points. A
+// failure fails doctor: the sync itself would die only at write time, and
+// rsync's error for a sudo password prompt is famously unhelpful.
+func doctorSudoHosts(programs []*twin.Program, reachable map[string]bool) bool {
+	seen := map[string]bool{}
+	var hosts []string
+	for _, p := range programs {
+		for _, j := range p.Jobs {
+			if !j.Sudo || j.Active != 1 || !j.IsRemote() {
+				continue
+			}
+			host, _ := twin.SplitRemote(j.Target)
+			if !seen[host] {
+				seen[host] = true
+				hosts = append(hosts, host)
+			}
+		}
+	}
+	if len(hosts) == 0 {
+		return true
+	}
+	ok := true
+	fmt.Println("\nSudo targets")
+	for _, host := range hosts {
+		switch {
+		case !reachable[host]:
+			fmt.Printf("  –  %s  (not reachable, sudo untested)\n", host)
+		case twin.SudoOK(host):
+			fmt.Printf("  ✓  %s  (sudo -n)\n", host)
+		default:
+			fmt.Printf("  ✗  %s  (sudo -n fails — Sudo: syncs die at write time)\n", host)
+			ok = false
+		}
+	}
+	return ok
 }
 
 // doctorRemoteTools probes each reachable ssh host once for what the far

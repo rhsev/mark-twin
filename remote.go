@@ -199,9 +199,21 @@ func ParsePreflight(out string) map[string]bool {
 	return result
 }
 
-// MkdirP creates a directory on the remote side.
-func MkdirP(host, dir string) bool {
-	return exec.Command("ssh", sshArgs(host, "mkdir", "-p", ShellEsc(dir))...).Run() == nil
+// MkdirP creates a directory on the remote side; sudo mirrors the job's
+// Sudo field, so a missing directory under a root-owned parent can be made
+// by the same authority that will write into it.
+func MkdirP(host, dir string, sudo bool) bool {
+	args := []string{"mkdir", "-p", ShellEsc(dir)}
+	if sudo {
+		args = append([]string{"sudo", "-n"}, args...)
+	}
+	return exec.Command("ssh", sshArgs(host, args...)...).Run() == nil
+}
+
+// SudoOK reports whether host grants passwordless sudo — the thing a Sudo:
+// job otherwise dies on only at write time, with rsync's least helpful error.
+func SudoOK(host string) bool {
+	return exec.Command("ssh", sshArgs(host, "sudo", "-n", "true")...).Run() == nil
 }
 
 // ShellEsc quotes one argument for the remote shell (ssh joins its
