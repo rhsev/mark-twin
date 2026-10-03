@@ -41,12 +41,16 @@ type Job struct {
 	// Owned: paths inside the sync scope that the TARGET owns — machine-
 	// specific config the source must never clobber. Same rsync effect as
 	// Exclude, kept apart so status can name the intent.
-	Owned  []string
-	Label  string
-	Source string
-	Target string
-	Cmd    string
-	Delete bool
+	Owned []string
+	// Includes: when set, only these entries under Path take part — a
+	// positive list. Empty means everything, which is what every block
+	// without the field has always meant.
+	Includes []string
+	Label    string
+	Source   string
+	Target   string
+	Cmd      string
+	Delete   bool
 	// Sudo: the far side runs rsync through sudo and the files land as
 	// root:root — for targets only root may write (/usr/local/bin on
 	// Ubuntu). Scan-time rules: remote targets only, and never together

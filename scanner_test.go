@@ -323,3 +323,25 @@ func TestSplitList(t *testing.T) {
 		t.Errorf("empty must be an empty, non-nil list: %#v", got)
 	}
 }
+
+func TestBuildJobInclude(t *testing.T) {
+	d := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(d, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, d, "file.md", "x")
+	j := mustBuild(t, withRecord(map[string]any{"Source": d, "Path": "bin", "Include": "flink, Skripte/, /lib, /"}))
+	if strings.Join(j.Includes, "|") != "flink|Skripte|lib" {
+		t.Errorf("slashes trimmed, bare / dropped: %q", j.Includes)
+	}
+	if j := mustBuild(t, withRecord(map[string]any{"Source": d, "Path": "bin"})); len(j.Includes) != 0 {
+		t.Errorf("no field, no positive list: %v", j.Includes)
+	}
+	_, err := BuildJob(withRecord(map[string]any{"Source": d, "Path": "file.md", "Include": "x"}), nil)
+	if err == nil || !strings.Contains(err.Error(), "Include needs a directory") {
+		t.Errorf("Include on a file must be refused: %v", err)
+	}
+	if _, err := BuildJob(withRecord(map[string]any{"Include": []any{"a", "b"}}), nil); err == nil || !strings.Contains(err.Error(), "Include") {
+		t.Errorf("list under Include: %v", err)
+	}
+}

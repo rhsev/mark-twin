@@ -261,3 +261,93 @@ func TestRenderJob(t *testing.T) {
 		t.Error("cmd should be skipped when unchanged")
 	}
 }
+
+// Include is a positive list: without it nothing changes, with it each entry
+// is let through as file and as directory, parents of nested entries open
+// the way down, and a closing --exclude=* drops the rest.
+func TestIncludeArgs(t *testing.T) {
+	if got := IncludeArgs(nil); got != nil {
+		t.Errorf("no Include, no filters: %v", got)
+	}
+	got := IncludeArgs([]string{"flink", "Skripte/tool.sh", "Skripte/lib"})
+	want := []string{
+		"--include=/flink", "--include=/flink/***",
+		"--include=/Skripte/", "--include=/Skripte/tool.sh", "--include=/Skripte/tool.sh/***",
+		"--include=/Skripte/lib", "--include=/Skripte/lib/***",
+		"--exclude=*",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("got  %v\nwant %v", got, want)
+	}
+}
+
+// First match wins in rsync, so the excludes must come before the includes —
+// otherwise an included directory would carry its .DS_Store and Own entries.
+func TestRsyncIncludeAfterExcludes(t *testing.T) {
+	cfg := NewConfig() // .DS_Store as global exclude
+	j := testJob(func(j *Job) {
+		j.Path, j.Excludes, j.Owned, j.Includes = "bin", []string{"*.log"}, []string{"local"}, []string{"flink"}
+	})
+	args := RsyncArgs(cfg, j, true, false)
+	idx := func(s string) int {
+		for i, a := range args {
+			if a == s {
+				return i
+			}
+		}
+		t.Fatalf("%s missing from %v", s, args)
+		return -1
+	}
+	inc := idx("--include=/flink")
+	for _, ex := range []string{"--exclude=.DS_Store", "--exclude=*.log", "--exclude=local"} {
+		if idx(ex) > inc {
+			t.Errorf("%s must precede the includes: %v", ex, args)
+		}
+	}
+	if args[len(args)-3] != "--exclude=*" {
+		t.Errorf("--exclude=* closes the filters, right before src/dst: %v", args)
+	}
+	if has(RsyncArgs(cfg, testJob(func(j *Job) { j.Path = "bin" }), true, false), "--exclude=*") {
+		t.Error("no Include must mean no catch-all exclude")
+	}
+}
+
+// The real thing, against the rsync on PATH: only the listed entries arrive,
+// excludes still hold inside an included directory, and --delete leaves
+// everything outside the list alone on the target.
+func TestIncludeRealRsync(t *testing.T) {
+	src, tgt := t.TempDir(), t.TempDir()
+	bin := filepath.Join(src, "bin")
+	for _, d := range []string{"bin/Skripte/lib", "bin/other"} {
+		if err := os.MkdirAll(filepath.Join(src, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{"flink", "stale.sh", "Skripte/tool.sh", "Skripte/skip.sh", "Skripte/lib/a.rb", "Skripte/lib/.DS_Store", "other/x"} {
+		write(t, bin, f, f)
+	}
+	if err := os.MkdirAll(filepath.Join(tgt, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(tgt, "bin"), "target-only.rb", "mine")
+
+	j := testJob(func(j *Job) {
+		j.Path, j.Source, j.Target, j.Delete = "bin", src, tgt, true
+		j.Includes = []string{"flink", "Skripte/tool.sh", "Skripte/lib"}
+	})
+	if ok, msg, _ := RunJob(NewConfig(), j, false, false); !ok {
+		t.Fatalf("sync failed: %s", msg)
+	}
+	var got []string
+	filepath.WalkDir(filepath.Join(tgt, "bin"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			rel, _ := filepath.Rel(filepath.Join(tgt, "bin"), p)
+			got = append(got, rel)
+		}
+		return nil
+	})
+	want := []string{"Skripte/lib/a.rb", "Skripte/tool.sh", "flink", "target-only.rb"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("target holds %v, want %v", got, want)
+	}
+}

@@ -13,6 +13,7 @@ type JobJSON struct {
 	Active            int        `json:"active"`
 	Excludes          []string   `json:"excludes"`
 	Owned             []string   `json:"owned"`
+	Includes          []string   `json:"includes"`
 	Label             string     `json:"label"`
 	Source            string     `json:"source"`
 	Target            string     `json:"target"`
@@ -61,6 +62,7 @@ func (j *Job) ToJSON() JobJSON {
 		Active:            j.Active,
 		Excludes:          nonNil(j.Excludes),
 		Owned:             nonNil(j.Owned),
+		Includes:          nonNil(j.Includes),
 		Label:             j.Label,
 		Source:            j.Source,
 		Target:            j.Target,

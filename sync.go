@@ -256,10 +256,42 @@ func RsyncArgs(cfg *Config, job *Job, dryRun, force bool) []string {
 	for _, ex := range job.AllExcludes() {
 		args = append(args, "--exclude="+ex)
 	}
+	// After the excludes: rsync's first match wins, so .DS_Store, Exclude
+	// and Own still hold inside an included directory.
+	args = append(args, IncludeArgs(job.Includes)...)
 	if isDir(src) {
 		return append(args, src+"/", tgt+"/")
 	}
 	return append(args, src, tgt)
+}
+
+// IncludeArgs turns a positive list into rsync filters, anchored at the
+// transfer root: each entry matches as a file ("/flink") and as a directory
+// with everything below it ("/Skripte/***"); a nested entry lets its parent
+// directories through so rsync descends to it. A closing --exclude=* drops
+// the rest — which, without --delete-excluded, also protects everything
+// outside the list on the target from --delete. No entries, no filters.
+func IncludeArgs(includes []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(arg string) {
+		if !seen[arg] {
+			seen[arg] = true
+			out = append(out, arg)
+		}
+	}
+	for _, inc := range includes {
+		parts := strings.Split(inc, "/")
+		for i := 1; i < len(parts); i++ {
+			add("--include=/" + strings.Join(parts[:i], "/") + "/")
+		}
+		add("--include=/" + inc)
+		add("--include=/" + inc + "/***")
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return append(out, "--exclude=*")
 }
 
 // BackupArgs is the safety net for --delete: deleted and overwritten files

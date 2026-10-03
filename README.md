@@ -267,6 +267,7 @@ rather than as an error. A list where a single value belongs
 | `Label` | either | Free-text grouping, filterable via `--label` |
 | `Exclude` | block | Comma-separated paths that are not part of the sync |
 | `Own` | block | Comma-separated paths the **target** owns |
+| `Include` | block | Comma-separated entries under a directory `Path`; when set, **only** these sync |
 | `Delete` | block | `true` mirrors deletions, with backups |
 | `Sudo` | block | `true` writes through `sudo rsync` as `root:root` — remote targets only, never with `Delete` |
 | `Cmd` | block | Shell command, run only when bytes actually moved |
@@ -289,6 +290,28 @@ The distinction is documentation, not mechanism. Six months on, `Own:` still
 says "deliberate, the other machine maintains this", where the same entry sitting
 in `Exclude:` between `*.dwarf` and `.DS_Store` is something you once
 filtered out.
+
+### Include: a positive list
+
+`Exclude` fails open: whatever nobody thought to list travels along. For a
+directory that mostly holds things the other machine does not want — a `~/bin`
+with symlinks into local checkouts, retired scripts and one-machine tools —
+`Include` turns it around:
+
+```yaml
+Program: bin
+Path: bin
+Include: flink, Skripte/
+```
+
+Only the named entries under `Path` take part; an entry may be a file, a
+directory (with everything below it) or a nested path (`Skripte/tool.sh`).
+Without the field, everything syncs, exactly as before. `Exclude` and `Own`
+still apply inside what is included, so a `.DS_Store` in `Skripte/` stays
+home. Forgetting an entry fails closed: the script is simply missing on the
+target, which shows the first time it is called. Entries outside the list are
+also safe from `Delete` on the target — rsync never deletes what it excludes.
+`Include` on a file `Path` is refused at scan time.
 
 ### Cmd: doing something after a sync
 

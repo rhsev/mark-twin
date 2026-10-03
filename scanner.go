@@ -222,7 +222,7 @@ func recordContext(r map[string]any) string {
 // textFields are the block fields BuildJob reads as text.
 var textFields = []string{
 	"Program", "Path", "Description", "Label", "Source", "Target",
-	"Target-Path", "Exclude", "Own", "Cmd", "_note_file",
+	"Target-Path", "Exclude", "Own", "Include", "Cmd", "_note_file",
 }
 
 // BuildJob turns one grubber record into a Job. Records without Path,
@@ -252,6 +252,7 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 	skipVerify := r["Verify"] == false
 	excludes := SplitList(fields["Exclude"])
 	owned := SplitList(fields["Own"])
+	includes := IncludeList(fields["Include"])
 	remote := IsRemote(target)
 
 	if render && remote {
@@ -301,6 +302,12 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 	// target — also for remote jobs, whose far side can't be inspected here.
 	directory := srcExists && isDir(srcFull)
 
+	// Include narrows a directory to named entries. On a file it would turn
+	// the trailing --exclude=* against the file itself and sync nothing.
+	if len(includes) > 0 && srcExists && !directory {
+		return nil, fmt.Errorf("%s: Include needs a directory Path (%s is a file)", ctx, path)
+	}
+
 	// A file job whose mtimes drifted apart may still hold the same bytes
 	// (a `cat >` copy before the first twin run). Check before judging; a
 	// directory's own mtime is judged not at all (see Job.Status).
@@ -322,6 +329,7 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 		Active:          toInt(r["Active"]),
 		Excludes:        excludes,
 		Owned:           owned,
+		Includes:        includes,
 		Label:           fields["Label"],
 		Source:          source,
 		Target:          target,
@@ -364,6 +372,19 @@ func SplitList(value string) []string {
 	out := []string{}
 	for _, part := range strings.Split(value, ",") {
 		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// IncludeList reads the Include field: entries relative to Path, with
+// leading and trailing slashes dropped — "Skripte/" and "/Skripte" both name
+// the directory Skripte, and a bare "/" names nothing.
+func IncludeList(value string) []string {
+	out := []string{}
+	for _, entry := range SplitList(value) {
+		if p := strings.Trim(entry, "/"); p != "" {
 			out = append(out, p)
 		}
 	}

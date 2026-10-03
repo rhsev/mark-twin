@@ -104,6 +104,9 @@ func cmdStatus(cfg *twin.Config, args []string) error {
 					fmt.Println("      content identical, timestamps differ")
 				}
 			}
+			if len(j.Includes) > 0 {
+				fmt.Printf("      only %s\n", strings.Join(j.Includes, ", "))
+			}
 			// Named, not hidden: these belong to the target on purpose.
 			if len(j.Owned) > 0 {
 				fmt.Printf("      own %s\n", strings.Join(j.Owned, ", "))
