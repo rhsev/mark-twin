@@ -313,6 +313,19 @@ target, which shows the first time it is called. Entries outside the list are
 also safe from `Delete` on the target — rsync never deletes what it excludes.
 `Include` on a file `Path` is refused at scan time.
 
+No suffix is needed: each entry is filtered both as a file and as a directory
+with everything below it, and leading or trailing slashes are stripped — `Skripte`,
+`Skripte/` and `/Skripte` all name the same thing. Several entries are
+**comma-separated in the one field**; a YAML list is refused ("must be a single
+value (comma-separated for several)"). For a long list, fold it:
+
+```yaml
+Include: >-
+  flink,
+  Skripte,
+  tools/mkicon
+```
+
 ### Cmd: doing something after a sync
 
 `Cmd` runs a shell command once rsync has actually transferred bytes — a no-op
