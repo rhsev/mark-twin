@@ -57,7 +57,38 @@ func LoadJobs(cfg *Config, scanPath string) ([]*Job, error) {
 		}
 	}
 	FillRemoteStats(jobs)
+	FillLocalAvailability(jobs, Mounted)
 	return jobs, nil
+}
+
+// FillLocalAvailability is the local counterpart of a failed ssh: a local
+// target that is not a mounted volume marks its jobs unreachable. Without it
+// an unmounted share reads as every file missing — missing_target, a finding
+// — where the truth is that nothing could be looked at. The rule is the one
+// sync applies before it writes (targetAvailability), so status and sync
+// cannot disagree about what is there. mounted is a parameter so tests need
+// no real volume.
+func FillLocalAvailability(jobs []*Job, mounted func(string) bool) {
+	verdict := map[string]bool{}
+	for _, j := range jobs {
+		if j.IsRemote() || j.Active != 1 {
+			continue
+		}
+		ok, seen := verdict[j.Target]
+		if !seen {
+			ok = mounted(j.Target)
+			verdict[j.Target] = ok
+		}
+		if ok {
+			continue
+		}
+		j.TargetUnreachable = true
+		j.TargetExists = false
+		j.TargetMtime = nil
+		j.Conflict = false
+		j.ContentEqual = nil
+		j.RenderOutdated = nil
+	}
 }
 
 // FillRemoteStats stats remote targets in one ssh round-trip per host. A

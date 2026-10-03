@@ -376,7 +376,8 @@ gets cleaned up. Whoever needs both has to argue the case in code.
 Both are first-class. `twin status`, the user interface, `Exclude`/`Own`, `Delete` and
 `Cmd` behave identically; remote paths are stat'ed (and, where timestamps
 disagree, checksummed via `md5`/`md5sum`) in batched ssh round-trips per host,
-and an unreachable host shows as `?` instead of failing the scan.
+and an unreachable host shows as `?` instead of failing the scan. An unmounted
+volume shows the same `?` — "could not look", not "every file missing".
 
 The remote side needs `rsync` and `/bin/sh`; `stat` (or `date -r`) and
 `md5`/`md5sum` improve status from there, and `twin doctor` probes a host for
@@ -393,6 +394,7 @@ Two differences are real:
 |---|---|---|
 | Setup | volume must be mounted | ssh key (`ssh-copy-id`) |
 | Before syncing | mount check | reachability check |
+| Target absent | `?` unreachable | `?` unreachable |
 | `Render: true` | supported | **not** supported |
 
 `Render` needs to read and write file contents on the target, which twin only

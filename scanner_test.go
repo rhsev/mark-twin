@@ -345,3 +345,37 @@ func TestBuildJobInclude(t *testing.T) {
 		t.Errorf("list under Include: %v", err)
 	}
 }
+
+// An unmounted local share is "could not look", not "every file missing" —
+// the 18-entry false drift report of 2026-10-01 (home_macbook, /Volumes/ralf).
+func TestFillLocalAvailability(t *testing.T) {
+	share := mustBuild(t, withRecord(map[string]any{"Path": "a", "Target": "/Volumes/share"}))
+	share2 := mustBuild(t, withRecord(map[string]any{"Path": "b", "Target": "/Volumes/share"}))
+	here := mustBuild(t, withRecord(map[string]any{"Path": "c", "Target": "/srv/here"}))
+	remote := mustBuild(t, withRecord(map[string]any{"Path": "d", "Target": "ralf@book:/srv"}))
+	off := mustBuild(t, withRecord(map[string]any{"Path": "e", "Target": "/Volumes/share", "Active": 0}))
+	// A stale mount point may still hold files; they must not count.
+	now := time.Now()
+	share.TargetExists, share.TargetMtime = true, &now
+
+	calls := map[string]int{}
+	FillLocalAvailability([]*Job{share, share2, here, remote, off}, func(p string) bool {
+		calls[p]++
+		return p == "/srv/here"
+	})
+
+	for _, j := range []*Job{share, share2} {
+		if j.Status() != StatusUnreachable || j.TargetExists || j.TargetMtime != nil {
+			t.Errorf("%s on an unmounted share: %s %+v", j.Path, j.Status(), j)
+		}
+	}
+	if here.TargetUnreachable || remote.TargetUnreachable || off.TargetUnreachable {
+		t.Error("only active local jobs on an unmounted target are marked")
+	}
+	if off.Status() != StatusDisabled {
+		t.Errorf("disabled stays disabled: %s", off.Status())
+	}
+	if calls["/Volumes/share"] != 1 || calls["ralf@book:/srv"] != 0 {
+		t.Errorf("one probe per local target, none for remote: %v", calls)
+	}
+}

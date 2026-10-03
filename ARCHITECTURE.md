@@ -239,7 +239,10 @@ makes a job remote (`IsRemote`). Sources stay local, twin pushes.
   `date -r`). The answer is three-valued: `-` means missing, an empty or
   unparseable time means present with unknown mtime, and a path absent from
   the answer counts as missing. A failed ssh sets `TargetUnreachable`; the
-  scan never fails on a dead host.
+  scan never fails on a dead host. `FillLocalAvailability` is the local
+  counterpart: a local target that is not a mounted volume (`Mounted`, the
+  rule `sync` checks before writing) sets `TargetUnreachable` too, so an
+  unmounted share is not reported as every file `missing_target`.
 - The batch scripts run through `/bin/sh -c '…'` explicitly, so the login
   shell on the far side does not matter; they contain no single quotes, and
   a test guards that.
