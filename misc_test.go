@@ -250,7 +250,13 @@ func TestAddHelpers(t *testing.T) {
 }
 
 func TestJobJSONShape(t *testing.T) {
-	j := testJob(func(j *Job) { j.Drift = drift([]string{"x"}, nil, []*Entry{{Rel: "y"}}) })
+	// Real mtimes, because a file job without them is unverified, not in
+	// sync — the fixture used to lean on the false green by accident.
+	now := time.Now()
+	j := testJob(func(j *Job) {
+		j.SourceMtime, j.TargetMtime = &now, &now
+		j.Drift = drift([]string{"x"}, nil, []*Entry{{Rel: "y"}})
+	})
 	out := j.ToJSON()
 	if out.TargetPathField != nil || out.Drift == nil || !eq(out.Drift.Conflicts, []string{"y"}) || !out.Verify || out.Status != StatusInSync {
 		t.Errorf("%+v", out)

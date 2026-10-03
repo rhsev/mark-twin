@@ -1,6 +1,9 @@
 package twin
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +42,27 @@ func TestRemote(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("preflight %s = %v", k, got[k])
 		}
+	}
+}
+
+// The chain must yield a bare epoch through this platform's own stat. What
+// it pins is the GNU/BSD -f divergence: GNU's -f half-succeeds with a
+// filesystem dump instead of failing (VPS, 2026-09-27), so GNU's -c has to
+// run first — and this test fails on whichever platform the order breaks.
+func TestStatScriptOnThisPlatform(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "probe")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", StatScript)
+	cmd.Stdin = strings.NewReader(path + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := ParseStats(string(out))[path]
+	if !st.Exists || st.Mtime == nil {
+		t.Errorf("stat chain must yield a parsable epoch here, got %q", out)
 	}
 }
 

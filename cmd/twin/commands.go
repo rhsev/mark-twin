@@ -91,6 +91,9 @@ func cmdStatus(cfg *twin.Config, args []string) error {
 				tgt := "(not found)"
 				if j.TargetExists && j.TargetMtime != nil {
 					tgt = j.TargetMtime.Format(stampLayout)
+				} else if j.TargetExists {
+					// There, but the stat chain could not name a time.
+					tgt = "(mtime unknown)"
 				}
 				if j.TargetUnreachable {
 					tgt = "(unreachable)"

@@ -50,11 +50,16 @@ func sshArgs(host string, rest ...string) []string {
 
 // StatScript stats many paths in one round-trip: paths over stdin, one per
 // line; answers "path<TAB>epoch" or "path<TAB>-" for missing ones. Tries
-// BSD stat, then GNU, then BusyBox `date -r` — covers macOS, Linux and
-// OpenWrt. An empty epoch means the whole chain failed: unknown, not 1970.
+// GNU stat, then BSD, then BusyBox `date -r` — covers Linux, macOS and
+// OpenWrt. GNU must come first: BSD's `-f` takes the format, GNU's `-f`
+// switches to filesystem mode and half-succeeds with a multi-line dump
+// instead of failing, which poisons the chain for every tool behind it —
+// found on the VPS 2026-09-27, where every mtime read as unknown. GNU's
+// `-c` fails cleanly on BSD, so this order is safe both ways. An empty
+// epoch means the whole chain failed: unknown, not 1970.
 const StatScript = `while IFS= read -r p; do
   if [ -e "$p" ]; then
-    m=$(stat -f %m -- "$p" 2>/dev/null || stat -c %Y -- "$p" 2>/dev/null || date -r "$p" +%s)
+    m=$(stat -c %Y -- "$p" 2>/dev/null || stat -f %m -- "$p" 2>/dev/null || date -r "$p" +%s)
     printf "%s\t%s\n" "$p" "$m"
   else
     printf "%s\t-\n" "$p"

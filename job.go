@@ -153,8 +153,12 @@ func (j *Job) Status() Status {
 	if j.Conflict {
 		return StatusTargetNewer
 	}
+	// A file that exists but whose mtime nobody could name is unchecked,
+	// not in sync — the false green statusRank exists to avoid (VPS,
+	// 2026-09-27: a poisoned remote stat chain read every target as
+	// current).
 	if j.SourceMtime == nil || j.TargetMtime == nil {
-		return StatusInSync
+		return StatusUnverified
 	}
 	delta := j.SourceMtime.Sub(*j.TargetMtime)
 	if delta.Abs() < mtimeTolerance {

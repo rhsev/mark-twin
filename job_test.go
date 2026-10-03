@@ -31,6 +31,16 @@ func drift(pending, timeOnly []string, conflicts []*Entry) *Drift {
 	return d
 }
 
+// A target that exists but yields no mtime is unchecked, not in sync — the
+// verdict a poisoned remote stat chain has to land on (VPS, 2026-09-27).
+func TestJobStatusUnknownMtimeIsUnverified(t *testing.T) {
+	now := time.Now()
+	j := testJob(func(j *Job) { j.SourceMtime, j.TargetMtime = &now, nil })
+	if got := j.Status(); got != StatusUnverified {
+		t.Errorf("unknown target mtime = %s, want %s", got, StatusUnverified)
+	}
+}
+
 func TestJobStatus(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
