@@ -160,8 +160,11 @@ sync-file (`Source: "{{src.home}}"`). See
 
 `cmd/twin/tui*.go`, built on [basekit](https://github.com/rhsev/matterbase)
 (`frame`, `input`, `recordtable`, `preview`, `theme`, `exec`). One screen:
-filter on top, table in the middle, preview on the right, status and key
-hints at the bottom.
+filter on top, table in the middle, preview on the right, and a footer of
+three lines: what is running (with a spinner: loading, verifying with a
+count, a sync's current job) or the summary when idle; the last result or
+error, or else a suggestion (`v` while rows are unverified); the key hints.
+The spinner ticks only while something is in flight (`activity`).
 
 1. **Stage 1: programs.** One `recordtable` row per merged program
    (`MergePrograms`: same name across sync-files becomes one entry,

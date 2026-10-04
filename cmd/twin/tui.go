@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rhsev/matterbase/basekit/frame"
@@ -59,7 +60,6 @@ type tuiModel struct {
 	syncResults map[string]syncResult
 	drifts      map[string]*twin.Drift
 	driftAt     map[string]time.Time
-	lastSync    string
 	jobTable    recordtable.Model
 
 	stage         stage
@@ -68,8 +68,8 @@ type tuiModel struct {
 	prev          previewpane.Model
 
 	loadGen, verifyGen, previewGen, dryRunGen int
-	loading                                   bool
-	verifying                                 int
+	loading, dryRunning                       bool
+	verifying, verifyTotal                    int
 	reenter                                   string
 	previewCache                              map[string]string
 	previewWant                               string
@@ -79,10 +79,16 @@ type tuiModel struct {
 	run     *syncRun
 	syncGen int
 
-	status    string
-	statusErr bool
-	width     int
-	height    int
+	// The footer has two lines above the key hints. The first says what is
+	// running, with a spinner, or the summary when nothing is; the second
+	// holds status — the last result or error — or else a suggestion.
+	summary           string
+	status            string
+	statusErr         bool
+	spin              spinner.Model
+	animate, spinning bool // animate is off in tests: a ticking spinner never lets pump finish
+	width             int
+	height            int
 }
 
 // syncRun is one sync from the first check to the last job: the jobs whose
@@ -96,6 +102,7 @@ type syncRun struct {
 	diff      string // rendered once d was pressed
 	force     bool
 	outcomes  []jobOutcome
+	progress  string // what the activity line says
 }
 
 func newTUI(cfg *twin.Config, file string, render renderer) tuiModel {
@@ -105,7 +112,7 @@ func newTUI(cfg *twin.Config, file string, render renderer) tuiModel {
 	m := tuiModel{
 		cfg: cfg, file: file, render: render, load: loadCmd,
 		planSync: planSync, runSyncJob: runSyncJob,
-		loadGen: 1, loading: true, status: "loading sync-files…",
+		loadGen: 1, loading: true,
 		selected:     map[*twin.Job]bool{},
 		dryRuns:      map[string]dryRunResult{},
 		syncResults:  map[string]syncResult{},
@@ -117,11 +124,14 @@ func newTUI(cfg *twin.Config, file string, render renderer) tuiModel {
 	m.programTable = recordtable.New(recordtable.Config{Columns: programColumns})
 	m.jobTable = recordtable.New(recordtable.Config{Columns: jobColumns})
 	m.prev = previewpane.New()
+	m.spin = spinner.New(spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(theme.Accent)))
 	return m
 }
 
 func runTUI(cfg *twin.Config, file string) error {
 	m := newTUI(cfg, file, makeRenderer(cfg))
+	m.animate = true
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
 }
@@ -136,7 +146,6 @@ func (m tuiModel) Init() tea.Cmd {
 func (m *tuiModel) startLoad() tea.Cmd {
 	m.loadGen++
 	m.loading = true
-	m.setStatus("loading sync-files…", false)
 	return m.load(m.cfg, m.file, m.loadGen)
 }
 
@@ -147,8 +156,12 @@ func (m *tuiModel) startVerify(jobs []*twin.Job) tea.Cmd {
 	if len(candidates) == 0 {
 		return nil
 	}
+	// A new generation drops every answer still in flight, so the count
+	// starts over; the dropped jobs are still unverified and among the
+	// candidates again.
 	m.verifyGen++
-	m.verifying += len(candidates)
+	m.verifying = len(candidates)
+	m.verifyTotal = len(candidates)
 	cmds := make([]tea.Cmd, len(candidates))
 	for i, j := range candidates {
 		cmds[i] = driftCmd(m.cfg, j, m.verifyGen)
@@ -207,6 +220,7 @@ func (m *tuiModel) enterProgram(p *twin.Program) tea.Cmd {
 	m.program = p
 	m.stage = stageJobs
 	m.selected = map[*twin.Job]bool{}
+	m.setStatus("", false)
 	m.filter.SetValue("")
 	m.jobTable = recordtable.New(recordtable.Config{Columns: jobColumns, Widths: jobWidths(p, p.Jobs)})
 	m.applyLayout()
@@ -231,7 +245,7 @@ func (m *tuiModel) reopenProgram(p *twin.Program) tea.Cmd {
 func (m *tuiModel) leaveProgram() {
 	m.stage = stagePrograms
 	m.program = nil
-	m.lastSync = ""
+	m.setStatus("", false)
 	m.verifyGen++
 	m.verifying = 0
 	m.filter.SetValue("")
@@ -311,8 +325,8 @@ func (m *tuiModel) sync() tea.Cmd {
 		return nil
 	}
 	m.syncGen++
-	m.run = &syncRun{program: m.program}
-	m.setStatus(fmt.Sprintf("sync %s: checking target…", m.program.Name), false)
+	m.run = &syncRun{program: m.program, progress: fmt.Sprintf("sync %s: checking target…", m.program.Name)}
+	m.setStatus("", false)
 	return syncPlanCmd(m.planSync, m.cfg, jobs, m.syncGen)
 }
 
@@ -374,10 +388,11 @@ func (m *tuiModel) nextSyncJob() tea.Cmd {
 	i := len(run.outcomes)
 	if i < len(run.jobs) {
 		job := run.jobs[i]
-		m.setStatus(fmt.Sprintf("sync %s: %d of %d · %s…", run.program.Name, i+1, len(run.jobs), job.Path), false)
+		run.progress = fmt.Sprintf("sync %s: %d of %d · %s…", run.program.Name, i+1, len(run.jobs), job.Path)
 		return syncJobCmd(m.runSyncJob, m.cfg, job, run.force, m.syncGen)
 	}
-	m.lastSync = syncSummary(run.outcomes)
+	verdict, failed := syncSummary(run.outcomes)
+	m.setStatus(verdict, failed)
 	m.run = nil
 	m.reenter = run.program.Name
 	return m.startLoad()
@@ -418,7 +433,8 @@ func (m *tuiModel) dryRun() tea.Cmd {
 		return nil
 	}
 	m.dryRunGen++
-	m.setStatus(fmt.Sprintf("dry-run: %d job(s)…", len(jobs)), false)
+	m.dryRunning = true
+	m.setStatus("", false)
 	return dryRunCmd(m.cfg, m.program, jobs, m.dryRunGen)
 }
 
@@ -488,17 +504,71 @@ func (m *tuiModel) updateSummary() {
 			}
 		}
 		s = fmt.Sprintf("%s · %d of %d selected", m.program.Name, n, len(m.program.Jobs))
-		if m.lastSync != "" {
-			s += " · " + m.lastSync
+	}
+	m.summary = s
+}
+
+// activity is what the first footer line says: the work in flight, most
+// specific first, and whether it is running (spinner) — or the summary.
+func (m *tuiModel) activity() (string, bool) {
+	switch {
+	case m.run != nil && m.run.asking:
+		return fmt.Sprintf("sync %s: waiting for your answer", m.run.program.Name), false
+	case m.run != nil:
+		return m.run.progress, true
+	case m.dryRunning:
+		return "dry-run…", true
+	case m.loading && len(m.programs) == 0:
+		return "loading sync-files — asking the targets…", true
+	case m.loading:
+		return "reloading sync-files…", true
+	case m.verifying > 0:
+		return fmt.Sprintf("verifying %d director%s with rsync… %d done", m.verifyTotal,
+			plural(m.verifyTotal, "y", "ies"), m.verifyTotal-m.verifying), true
+	}
+	return m.summary, false
+}
+
+// suggestion fills the second footer line when there is no status: what
+// the grey rows are, and the key that resolves them.
+func (m *tuiModel) suggestion() string {
+	if m.loading {
+		return ""
+	}
+	switch m.stage {
+	case stagePrograms:
+		n := 0
+		for _, p := range m.programs {
+			if p.Status() == twin.StatusUnverified {
+				n++
+			}
+		}
+		switch {
+		case n == 0:
+			return ""
+		case m.verifying > 0:
+			return fmt.Sprintf("%d program%s not verified yet", n, plural(n, "", "s"))
+		}
+		return fmt.Sprintf("%d program%s not verified yet (grey) — press v to check them with rsync", n, plural(n, "", "s"))
+	case stageJobs:
+		n := 0
+		for _, j := range m.program.Jobs {
+			if j.Status() == twin.StatusUnverified {
+				n++
+			}
+		}
+		if n > 0 && m.verifying == 0 {
+			return fmt.Sprintf("%d director%s not verified — press v to verify", n, plural(n, "y", "ies"))
 		}
 	}
-	if m.loading {
-		s += " · loading…"
+	return ""
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
 	}
-	if m.verifying > 0 {
-		s += fmt.Sprintf(" · verifying %d…", m.verifying)
-	}
-	m.setStatus(s, false)
+	return many
 }
 
 func (m *tuiModel) previewWidth() int {
@@ -552,7 +622,28 @@ func (m *tuiModel) updatePreview() tea.Cmd {
 
 // ── Update ───────────────────────────────────────────────────────────────────
 
+// Update runs the model's update and keeps the spinner ticking exactly as
+// long as something is in flight.
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if tick, ok := msg.(spinner.TickMsg); ok {
+		if _, busy := m.activity(); !busy || !m.animate {
+			m.spinning = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(tick)
+		return m, cmd
+	}
+	next, cmd := m.update(msg)
+	nm := next.(tuiModel)
+	if _, busy := nm.activity(); busy && nm.animate && !nm.spinning {
+		nm.spinning = true
+		cmd = tea.Batch(cmd, nm.spin.Tick)
+	}
+	return nm, cmd
+}
+
+func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -618,7 +709,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.updatePreview()
 
 	case dryRunMsg:
-		if msg.gen != m.dryRunGen || msg.program != m.program {
+		if msg.gen != m.dryRunGen {
+			return m, nil
+		}
+		m.dryRunning = false
+		if msg.program != m.program {
 			return m, nil
 		}
 		return m, m.showDryRun(msg)
@@ -798,7 +893,7 @@ func (m *tuiModel) sizes() frame.Sizes {
 	return frame.Compute(frame.Config{
 		ShowTopbar: true, TopbarHeight: 3,
 		ShowPreview: m.prev.Visible(), PreviewPct: 0.5, PreviewMax: 100,
-		StatusHeight: 2,
+		StatusHeight: 3,
 	}, m.width, m.height)
 }
 
@@ -849,20 +944,31 @@ func (m tuiModel) View() string {
 	}
 	main := frame.JoinRow("", tableBox, previewBox)
 
-	statusStyle := theme.StatusBar
-	if m.statusErr {
-		statusStyle = theme.StatusError
+	activity, busy := m.activity()
+	if busy {
+		activity = m.spin.View() + " " + activity
+	} else {
+		activity = "  " + activity
 	}
-	statusLine := statusStyle.Width(s.Width).Render(clampWidth(m.status, s.Width-2))
+	activityLine := theme.StatusBar.Width(s.Width).Render(clampWidth(activity, s.Width-2))
+	statusText, statusStyle := m.status, theme.StatusBar
+	switch {
+	case m.statusErr:
+		statusStyle = theme.StatusError
+	case statusText == "":
+		statusText, statusStyle = m.suggestion(), suggestionStyle
+	}
+	statusLine := statusStyle.Width(s.Width).Render(clampWidth("  "+statusText, s.Width-2))
 	hintLine := footerHintStyle.Width(s.Width).Render(clampWidth(m.keyHints(), s.Width-2))
 
-	return frame.JoinColumn(topbar, main, lipgloss.JoinVertical(lipgloss.Left, statusLine, hintLine))
+	return frame.JoinColumn(topbar, main, lipgloss.JoinVertical(lipgloss.Left, activityLine, statusLine, hintLine))
 }
 
 var (
 	footerHintStyle = lipgloss.NewStyle().Padding(0, 1)
 	footerKeyStyle  = lipgloss.NewStyle().Foreground(theme.Accent).Bold(true)
 	footerDescStyle = lipgloss.NewStyle().Foreground(theme.Muted)
+	suggestionStyle = theme.StatusBar.Foreground(theme.Accent)
 )
 
 type hint struct{ key, desc string }
@@ -934,8 +1040,9 @@ func (m *tuiModel) recordOutcome(o jobOutcome, at time.Time) {
 	delete(m.driftAt, key)
 }
 
-// syncSummary is the run's verdict for the status line.
-func syncSummary(outcomes []jobOutcome) string {
+// syncSummary is the run's verdict for the status line, and whether a job
+// failed.
+func syncSummary(outcomes []jobOutcome) (string, bool) {
 	changed, failed := 0, 0
 	for _, o := range outcomes {
 		if o.transferred {
@@ -949,7 +1056,7 @@ func syncSummary(outcomes []jobOutcome) string {
 	if failed > 0 {
 		s += fmt.Sprintf(", %d failed", failed)
 	}
-	return s
+	return s, failed > 0
 }
 
 // changesCell says what a sync would move (or just did), from the most

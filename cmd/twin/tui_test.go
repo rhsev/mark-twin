@@ -231,8 +231,8 @@ func TestTUISyncProgressAndLockedKeys(t *testing.T) {
 	m = next.(tuiModel)
 	next, cmd = m.Update(cmd())
 	m = next.(tuiModel)
-	if !strings.Contains(m.status, "checking target") || cmd == nil {
-		t.Fatalf("enter must start the checks, status %q", m.status)
+	if act, busy := m.activity(); !strings.Contains(act, "checking target") || !busy || cmd == nil {
+		t.Fatalf("enter must start the checks, activity %q", act)
 	}
 	gen := m.syncGen
 	m, _ = pump(m, key("enter"))
@@ -247,16 +247,16 @@ func TestTUISyncProgressAndLockedKeys(t *testing.T) {
 
 	next, cmd = m.Update(cmd()) // the plan arrives, the first job starts
 	m = next.(tuiModel)
-	if !strings.Contains(m.status, "1 of 3") || !strings.Contains(m.status, "server.rb") {
-		t.Errorf("status must name the running job, got %q", m.status)
+	if act, _ := m.activity(); !strings.Contains(act, "1 of 3") || !strings.Contains(act, "server.rb") {
+		t.Errorf("activity must name the running job, got %q", act)
 	}
 	if !strings.Contains(m.View(), "ctrl+c") {
 		t.Error("key hints must switch while a sync runs")
 	}
 	next, _ = m.Update(cmd())
 	m = next.(tuiModel)
-	if !strings.Contains(m.status, "2 of 3") || m.changesCell(m.program.Jobs[0]) != "synced –" {
-		t.Errorf("the first outcome must show before the second job ends: %q", m.status)
+	if act, _ := m.activity(); !strings.Contains(act, "2 of 3") || m.changesCell(m.program.Jobs[0]) != "synced –" {
+		t.Errorf("the first outcome must show before the second job ends: %q", act)
 	}
 }
 
@@ -460,5 +460,52 @@ func TestTUIVerificationSurvivesReload(t *testing.T) {
 	}
 	if got := m.programs[1].Status(); got != twin.StatusUnverified {
 		t.Errorf("beta was synced and must be verified anew, got %s", got)
+	}
+}
+
+// The footer's first line says what is running — loading at the start —
+// and falls back to the summary; the second line suggests v while rows
+// are unverified, and gives way to a result.
+func TestTUIFooterActivityAndSuggestion(t *testing.T) {
+	dir := func(name, path string) *twin.Job {
+		return &twin.Job{Program: name, Path: path, SyncFile: "/sync/a.md", Active: 1, Directory: true,
+			Source: "/nonexistent", Target: "/nonexistent", SourceExists: true, TargetExists: true}
+	}
+	m := newTUI(twin.NewConfig(), "", stubRenderer)
+	m.load = func(*twin.Config, string, int) tea.Cmd { return nil }
+	m, _ = pump(m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	if act, busy := m.activity(); !busy || !strings.Contains(act, "loading") || !strings.Contains(m.View(), "loading sync-files") {
+		t.Fatalf("the start must say it is loading: %q", act)
+	}
+	m, _ = pump(m, programsMsg{gen: m.loadGen, programs: []*twin.Program{
+		{Name: "alpha", Jobs: []*twin.Job{dir("alpha", "one")}},
+		{Name: "beta", Jobs: []*twin.Job{dir("beta", "two")}},
+	}})
+	if act, busy := m.activity(); busy || act != "2 programs" {
+		t.Errorf("idle, the first line is the summary: %q", act)
+	}
+	if view := m.View(); !strings.Contains(view, "2 programs not verified yet (grey) — press v") {
+		t.Errorf("unverified rows must suggest v:\n%s", view)
+	}
+
+	// v without running rsync: count what startVerify would start.
+	m.verifyGen++
+	m.verifying, m.verifyTotal = 2, 2
+	if act, busy := m.activity(); !busy || !strings.Contains(act, "verifying 2 directories") {
+		t.Errorf("verification must show as activity: %q", act)
+	}
+	if sug := m.suggestion(); strings.Contains(sug, "press v") {
+		t.Errorf("no v suggestion while verifying: %q", sug)
+	}
+	for _, p := range m.programs {
+		m, _ = pump(m, driftMsg{gen: m.verifyGen, job: p.Jobs[0], drift: &twin.Drift{}})
+	}
+	if _, busy := m.activity(); busy || m.suggestion() != "" {
+		t.Error("all verified: nothing running, nothing to suggest")
+	}
+
+	m.setStatus("dry-run: nothing would change", false)
+	if view := m.View(); !strings.Contains(view, "dry-run: nothing would change") {
+		t.Error("a status takes the second line")
 	}
 }

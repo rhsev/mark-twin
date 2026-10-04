@@ -194,7 +194,9 @@ failed.
 ### The text user interface (TUI)
 
 Two stages, one screen: a filter on top, the table in the middle, the preview
-on the right, status and keys at the bottom.
+on the right. At the bottom, a line says what is running (loading,
+verifying, syncing) and the next one shows the last result, or a hint:
+grey rows are not verified yet, and `v` checks them with rsync.
 
 | Stage 1 — programs | | Stage 2 — paths of one program | |
 |---|---|---|---|
