@@ -380,7 +380,9 @@ gets cleaned up. Whoever needs both has to argue the case in code.
 Both are first-class. `twin status`, the user interface, `Exclude`/`Own`, `Delete` and
 `Cmd` behave identically; remote paths are stat'ed (and, where timestamps
 disagree, checksummed via `md5`/`md5sum`) in batched ssh round-trips per host,
-and an unreachable host shows as `?` instead of failing the scan. An unmounted
+all hosts at once, and an unreachable host shows as `?` instead of failing the
+scan. `--file` and `--label` pick the sync-files first, so only their hosts
+are asked. An unmounted
 volume shows the same `?` — "could not look", not "every file missing".
 
 The remote side needs `rsync` and `/bin/sh`; `stat` (or `date -r`) and

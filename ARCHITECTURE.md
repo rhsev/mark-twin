@@ -196,7 +196,7 @@ so no second sync or reload replaces the jobs under it. Conflicts hold the
 run before the first byte: the preview shows `conflictReport`, `d` adds
 `conflictDiffs`, `y` continues with force, `n` drops the run. At the end the
 sync-files are reloaded and the same program reopens with the cursor where
-it was. Until 1.2.1 the sync handed the terminal to the CLI path through
+it was. Until 1.3.0 the sync handed the terminal to the CLI path through
 `tea.Exec` and waited for Enter.
 
 Two Bubble Tea details worth knowing: `Init` runs on a copy of the model and

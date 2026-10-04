@@ -5,7 +5,7 @@
 package twin
 
 // Version is the one version string; --version and doctor print it.
-const Version = "1.2.1"
+const Version = "1.3.0"
 
 // Build is the build stamp the Makefile injects (-X), so `--version` can
 // tell one 1.0.0-dev build from the next.
