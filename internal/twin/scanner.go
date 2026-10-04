@@ -11,12 +11,31 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// LoadJobs runs grubber over scanPath (or the configured sync_dir) and
-// builds one Job per YAML block.
+// LoadJobs runs grubber over scanPath (or the configured sync_dir), builds
+// one Job per YAML block and fills in what the targets say.
 func LoadJobs(cfg *Config, scanPath string) ([]*Job, error) {
+	jobs, err := buildJobs(cfg, scanPath)
+	if err != nil {
+		return nil, err
+	}
+	FillTargets(jobs)
+	return jobs, nil
+}
+
+// FillTargets asks the targets: remote ones over ssh, local ones whether
+// they are mounted. It belongs after any filtering — every remote host
+// costs an ssh round-trip, and an absent one its connect timeout.
+func FillTargets(jobs []*Job) {
+	FillRemoteStats(jobs)
+	FillLocalAvailability(jobs, Mounted)
+}
+
+// buildJobs runs grubber and builds the jobs, with local stats only.
+func buildJobs(cfg *Config, scanPath string) ([]*Job, error) {
 	if _, err := exec.LookPath("grubber"); err != nil {
 		return nil, errors.New("grubber not found in PATH")
 	}
@@ -56,8 +75,6 @@ func LoadJobs(cfg *Config, scanPath string) ([]*Job, error) {
 			jobs = append(jobs, j)
 		}
 	}
-	FillRemoteStats(jobs)
-	FillLocalAvailability(jobs, Mounted)
 	return jobs, nil
 }
 
@@ -91,9 +108,11 @@ func FillLocalAvailability(jobs []*Job, mounted func(string) bool) {
 	}
 }
 
-// FillRemoteStats stats remote targets in one ssh round-trip per host. A
-// failed ssh marks that host's jobs unreachable instead of aborting the scan
-// (local jobs stay usable).
+// FillRemoteStats stats remote targets in one ssh round-trip per host, all
+// hosts at once: the wait is the slowest host, not the sum (an absent host
+// alone costs the connect timeout). Each goroutine writes only its own
+// host's jobs. A failed ssh marks that host's jobs unreachable instead of
+// aborting the scan (local jobs stay usable).
 func FillRemoteStats(jobs []*Job) {
 	var hosts []string
 	byHost := map[string][]*Job{}
@@ -107,32 +126,42 @@ func FillRemoteStats(jobs []*Job) {
 		}
 		byHost[host] = append(byHost[host], j)
 	}
+	var wg sync.WaitGroup
 	for _, host := range hosts {
-		hostJobs := byHost[host]
-		paths := make([]string, len(hostJobs))
-		for i, j := range hostJobs {
-			_, paths[i] = SplitRemote(j.TargetPath())
-		}
-		stats, err := StatPaths(host, paths)
-		if err != nil {
-			for _, j := range hostJobs {
-				j.TargetUnreachable = true
-			}
-			continue
-		}
-		for i, j := range hostJobs {
-			// A path absent from the answer counts as missing, not as unknown.
-			st, present := stats[paths[i]]
-			j.TargetExists = present && st.Exists
-			j.TargetMtime = nil
-			if present {
-				j.TargetMtime = st.Mtime
-			}
-			j.Conflict = !j.Directory && j.SourceExists && j.TargetMtime != nil &&
-				j.SourceMtime != nil && j.TargetMtime.Sub(*j.SourceMtime) >= mtimeTolerance
-		}
-		verifyRemoteFileContent(host, hostJobs)
+		wg.Add(1)
+		go func(host string, hostJobs []*Job) {
+			defer wg.Done()
+			fillHostStats(host, hostJobs)
+		}(host, byHost[host])
 	}
+	wg.Wait()
+}
+
+// fillHostStats is one host's stat round plus its content check.
+func fillHostStats(host string, hostJobs []*Job) {
+	paths := make([]string, len(hostJobs))
+	for i, j := range hostJobs {
+		_, paths[i] = SplitRemote(j.TargetPath())
+	}
+	stats, err := StatPaths(host, paths)
+	if err != nil {
+		for _, j := range hostJobs {
+			j.TargetUnreachable = true
+		}
+		return
+	}
+	for i, j := range hostJobs {
+		// A path absent from the answer counts as missing, not as unknown.
+		st, present := stats[paths[i]]
+		j.TargetExists = present && st.Exists
+		j.TargetMtime = nil
+		if present {
+			j.TargetMtime = st.Mtime
+		}
+		j.Conflict = !j.Directory && j.SourceExists && j.TargetMtime != nil &&
+			j.SourceMtime != nil && j.TargetMtime.Sub(*j.SourceMtime) >= mtimeTolerance
+	}
+	verifyRemoteFileContent(host, hostJobs)
 }
 
 // verifyRemoteFileContent is the remote counterpart of the local content
@@ -181,7 +210,9 @@ func LoadPrograms(cfg *Config, file, label string, showAll bool) ([]*Program, er
 	if err != nil {
 		return nil, err
 	}
-	jobs, err := LoadJobs(cfg, scanPath)
+	// Filter first, then ask the targets: `--file vps` must not wait for
+	// the MacBook's ssh round-trip, or its timeout.
+	jobs, err := buildJobs(cfg, scanPath)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +229,7 @@ func LoadPrograms(cfg *Config, file, label string, showAll bool) ([]*Program, er
 		}
 		kept = append(kept, j)
 	}
+	FillTargets(kept)
 	return Group(kept), nil
 }
 

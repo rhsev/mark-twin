@@ -243,7 +243,9 @@ required check fails.
 makes a job remote (`IsRemote`). Sources stay local, twin pushes.
 
 - **Stat**: `BuildJob` leaves remote targets "missing" and `FillRemoteStats`
-  fills them in afterwards, one ssh round-trip per host (`StatPaths`: paths
+  fills them in afterwards, one ssh round-trip per host, all hosts in
+  parallel, and only for the jobs left after `--file`/`--label` filtering
+  (`FillTargets` runs after the filter; `StatPaths`: paths
   over stdin, `path<TAB>epoch` back; BSD `stat -f`, GNU `stat -c`, then
   `date -r`). The answer is three-valued: `-` means missing, an empty or
   unparseable time means present with unknown mtime, and a path absent from
