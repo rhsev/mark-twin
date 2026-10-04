@@ -1,10 +1,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -39,9 +36,26 @@ type previewMsg struct {
 	ansi string
 }
 
-type syncDoneMsg struct {
-	quit     bool
-	outcomes []jobOutcome
+// syncPlanMsg is what a sync learned before the first byte moves: which
+// targets are available and what the target changed on its own.
+type syncPlanMsg struct {
+	gen       int
+	ready     []*twin.Job
+	reasons   []string
+	conflicts []*twin.Entry
+	err       error
+}
+
+// syncJobMsg is one job's outcome; the next job starts when it arrives.
+type syncJobMsg struct {
+	gen     int
+	outcome jobOutcome
+}
+
+// conflictDiffMsg carries the rendered diffs for the conflict question.
+type conflictDiffMsg struct {
+	gen  int
+	text string
 }
 
 // syncResult is what a sync did to one job, kept across reloads.
@@ -178,36 +192,42 @@ func previewCmd(render renderer, job *twin.Job, width int, key string, gen int) 
 	}
 }
 
-// syncExec hands the terminal back to the CLI sync path — output, journal,
-// the conflict prompt with its diff view — exactly as `twin sync` does,
-// then waits for Enter the way the fzf picker did. Implements
-// tea.ExecCommand; the stdio setters are no-ops because syncJobs writes
-// to the process stdio directly.
-type syncExec struct {
-	cfg      *twin.Config
-	program  *twin.Program
-	jobs     []*twin.Job
-	quit     bool
-	outcomes []jobOutcome
-}
-
-func (s *syncExec) Run() error {
-	fmt.Println()
-	_, outcomes, err := syncJobs(s.cfg, s.program, s.jobs, syncOpts{})
-	s.outcomes = outcomes
-	if err != nil && !errors.Is(err, errExit) {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+// planSync runs the checks the CLI runs before syncing: target
+// availability (ssh probe, mount check) and the conflict detection round.
+// Both can take seconds, which is why they run off the main loop.
+func planSync(cfg *twin.Config, jobs []*twin.Job) syncPlanMsg {
+	var msg syncPlanMsg
+	msg.ready, msg.reasons = partitionAvailable(activeJobs(jobs))
+	if len(msg.reasons) > 0 || len(msg.ready) == 0 {
+		return msg
 	}
-	fmt.Print("\npress Enter to continue, q to quit ")
-	line, ok := readLine()
-	s.quit = ok && line == "q"
-	return nil
+	msg.conflicts, msg.err = detectConflicts(cfg, msg.ready)
+	return msg
 }
 
-func (s *syncExec) SetStdin(io.Reader)  {}
-func (s *syncExec) SetStdout(io.Writer) {}
-func (s *syncExec) SetStderr(io.Writer) {}
+// runSyncJob syncs one job and journals it, exactly as `twin sync` does.
+func runSyncJob(cfg *twin.Config, job *twin.Job, force bool) jobOutcome {
+	return runAndRecord(cfg, job, false, force)
+}
 
-func syncCmd(s *syncExec) tea.Cmd {
-	return tea.Exec(s, func(error) tea.Msg { return syncDoneMsg{quit: s.quit, outcomes: s.outcomes} })
+func syncPlanCmd(plan func(*twin.Config, []*twin.Job) syncPlanMsg, cfg *twin.Config, jobs []*twin.Job, gen int) tea.Cmd {
+	return func() tea.Msg {
+		msg := plan(cfg, jobs)
+		msg.gen = gen
+		return msg
+	}
+}
+
+func syncJobCmd(run func(*twin.Config, *twin.Job, bool) jobOutcome, cfg *twin.Config, job *twin.Job, force bool, gen int) tea.Cmd {
+	return func() tea.Msg {
+		return syncJobMsg{gen: gen, outcome: run(cfg, job, force)}
+	}
+}
+
+// conflictDiffCmd renders the diffs for the conflict question; a diff runs
+// a subprocess per file.
+func conflictDiffCmd(conflicts []*twin.Entry, gen int) tea.Cmd {
+	return func() tea.Msg {
+		return conflictDiffMsg{gen: gen, text: conflictDiffs(conflicts)}
+	}
 }

@@ -208,35 +208,12 @@ type jobOutcome struct {
 // changes; skipUnavailable skips jobs whose target is unmounted or
 // unreachable instead of aborting.
 func syncJobs(cfg *twin.Config, program *twin.Program, jobs []*twin.Job, opts syncOpts) (bool, []jobOutcome, error) {
-	var active []*twin.Job
-	for _, j := range jobs {
-		if j.Active == 1 {
-			active = append(active, j)
-		}
-	}
+	active := activeJobs(jobs)
 	if len(active) == 0 {
 		return true, nil, nil
 	}
 
-	// One availability check per unique target root: local targets must be
-	// mounted volumes, remote ones reachable via ssh.
-	availability := map[string]string{}
-	var ready []*twin.Job
-	var reasons []string
-	seenReason := map[string]bool{}
-	for _, j := range active {
-		reason, checked := availability[j.Target]
-		if !checked {
-			reason = targetAvailability(j)
-			availability[j.Target] = reason
-		}
-		if reason == "" {
-			ready = append(ready, j)
-		} else if !seenReason[reason] {
-			seenReason[reason] = true
-			reasons = append(reasons, reason)
-		}
-	}
+	ready, reasons := partitionAvailable(active)
 	for _, reason := range reasons {
 		if opts.skipUnavailable {
 			if !opts.quiet {
@@ -265,11 +242,9 @@ func syncJobs(cfg *twin.Config, program *twin.Program, jobs []*twin.Job, opts sy
 	allOK := true
 	var outcomes []jobOutcome
 	for _, job := range ready {
-		success, output, transferred := twin.RunJob(cfg, job, opts.dryRun, force)
-		outcomes = append(outcomes, jobOutcome{job: job, ok: success, transferred: transferred, output: output})
-		if !opts.dryRun {
-			twin.RecordJournal(job, success, transferred, output)
-		}
+		o := runAndRecord(cfg, job, opts.dryRun, force)
+		outcomes = append(outcomes, o)
+		success, output, transferred := o.ok, o.output, o.transferred
 		allOK = allOK && success
 		if opts.quiet && success && !transferred {
 			continue
@@ -297,6 +272,70 @@ func syncJobs(cfg *twin.Config, program *twin.Program, jobs []*twin.Job, opts sy
 		}
 	}
 	return allOK, outcomes, nil
+}
+
+// The steps of a sync, shared by the CLI (syncJobs) and the TUI, which runs
+// them off its main loop and asks the conflict question itself.
+
+// activeJobs drops disabled jobs.
+func activeJobs(jobs []*twin.Job) []*twin.Job {
+	var active []*twin.Job
+	for _, j := range jobs {
+		if j.Active == 1 {
+			active = append(active, j)
+		}
+	}
+	return active
+}
+
+// partitionAvailable splits jobs into those whose target can be synced now
+// and one reason per unavailable target. One check per unique target root:
+// local targets must be mounted volumes, remote ones reachable via ssh.
+func partitionAvailable(jobs []*twin.Job) (ready []*twin.Job, reasons []string) {
+	availability := map[string]string{}
+	seenReason := map[string]bool{}
+	for _, j := range jobs {
+		reason, checked := availability[j.Target]
+		if !checked {
+			reason = targetAvailability(j)
+			availability[j.Target] = reason
+		}
+		if reason == "" {
+			ready = append(ready, j)
+		} else if !seenReason[reason] {
+			seenReason[reason] = true
+			reasons = append(reasons, reason)
+		}
+	}
+	return ready, reasons
+}
+
+// detectConflicts lists the target-side changes a sync would overwrite.
+// Verify: false jobs skip the detection round (too big to walk); rsync's
+// --update still keeps newer target files, they just aren't listed here.
+func detectConflicts(cfg *twin.Config, jobs []*twin.Job) ([]*twin.Entry, error) {
+	var conflicts []*twin.Entry
+	for _, j := range jobs {
+		if !j.Verify() {
+			continue
+		}
+		found, err := twin.Detect(cfg, j)
+		if err != nil {
+			return nil, err
+		}
+		conflicts = append(conflicts, found...)
+	}
+	return conflicts, nil
+}
+
+// runAndRecord syncs one job and writes the journal entry (not for a dry
+// run).
+func runAndRecord(cfg *twin.Config, job *twin.Job, dryRun, force bool) jobOutcome {
+	success, output, transferred := twin.RunJob(cfg, job, dryRun, force)
+	if !dryRun {
+		twin.RecordJournal(job, success, transferred, output)
+	}
+	return jobOutcome{job: job, ok: success, transferred: transferred, output: output}
 }
 
 // indent prefixes every line; the result always ends in a newline.
@@ -331,18 +370,9 @@ func resolveConflicts(cfg *twin.Config, jobs []*twin.Job, opts syncOpts) (force,
 		return false, false, nil
 	}
 
-	// Verify: false jobs skip the detection round (too big to walk); rsync's
-	// --update still keeps newer target files, they just aren't listed here.
-	var conflicts []*twin.Entry
-	for _, j := range jobs {
-		if !j.Verify() {
-			continue
-		}
-		found, err := twin.Detect(cfg, j)
-		if err != nil {
-			return false, false, err
-		}
-		conflicts = append(conflicts, found...)
+	conflicts, err := detectConflicts(cfg, jobs)
+	if err != nil {
+		return false, false, err
 	}
 	if len(conflicts) == 0 {
 		return false, false, nil
@@ -378,7 +408,14 @@ func resolveConflicts(cfg *twin.Config, jobs []*twin.Job, opts syncOpts) (force,
 }
 
 func reportConflicts(conflicts []*twin.Entry) {
-	fmt.Fprintf(os.Stderr, "target has changed since the last sync — %d file(s) differ:\n", len(conflicts))
+	fmt.Fprint(os.Stderr, conflictReport(conflicts))
+}
+
+// conflictReport lists the target-side changes a sync would overwrite —
+// the CLI prints it before its prompt, the TUI shows it in the preview.
+func conflictReport(conflicts []*twin.Entry) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "target has changed since the last sync — %d file(s) differ:\n", len(conflicts))
 	for _, c := range conflicts {
 		age := ""
 		if delta, ok := c.AgeDelta(); ok {
@@ -388,17 +425,24 @@ func reportConflicts(conflicts []*twin.Entry) {
 		if c.Job.Path != c.Rel {
 			shown = c.Job.Path + "/" + c.Rel
 		}
-		fmt.Fprintf(os.Stderr, "  ! %s%s\n", shown, age)
+		fmt.Fprintf(&b, "  ! %s%s\n", shown, age)
 	}
-	fmt.Fprintln(os.Stderr, "syncing would replace them with the source version.")
+	b.WriteString("syncing would replace them with the source version.\n")
+	return b.String()
 }
 
 func showDiffs(conflicts []*twin.Entry) {
+	fmt.Print(conflictDiffs(conflicts))
+}
+
+// conflictDiffs renders one unified diff per conflicting file.
+func conflictDiffs(conflicts []*twin.Entry) string {
+	var b strings.Builder
 	for _, c := range conflicts {
-		fmt.Println()
-		fmt.Printf("── %s %s\n", c.Rel, strings.Repeat("─", max(0, 60-len([]rune(c.Rel)))))
-		fmt.Println(twin.Diff(c))
+		fmt.Fprintf(&b, "\n── %s %s\n", c.Rel, strings.Repeat("─", max(0, 60-len([]rune(c.Rel)))))
+		b.WriteString(twin.Diff(c) + "\n")
 	}
+	return b.String()
 }
 
 func formatAge(d time.Duration) string {

@@ -183,11 +183,18 @@ not by the Job object a reload replaces. The `changes` column shows the most
 recent of the three; a file's mtime status is the fallback. A synced job
 drops its old verdict and is verified anew.
 
-**Syncing hands the terminal back.** `enter` runs the CLI's `syncJobs`
-through `tea.Exec`: same output, journal and conflict prompt as `twin sync`,
-then "press Enter to continue". The per-job outcomes come back into the
-model, the sync-files are reloaded, and the same program reopens with the
-cursor where it was.
+**Syncing stays in the TUI.** `enter` runs the same steps as the CLI's
+`syncJobs`, which shares them (`partitionAvailable`, `detectConflicts`,
+`runAndRecord`), as background commands: one plan (availability, conflict
+detection) and then one command per job, so the status line can follow the
+run and each row shows its outcome as it arrives. A `syncRun` in the model
+holds the state; while it exists the keyboard is limited to moving around,
+so no second sync or reload replaces the jobs under it. Conflicts hold the
+run before the first byte: the preview shows `conflictReport`, `d` adds
+`conflictDiffs`, `y` continues with force, `n` drops the run. At the end the
+sync-files are reloaded and the same program reopens with the cursor where
+it was. Until 1.2.1 the sync handed the terminal to the CLI path through
+`tea.Exec` and waited for Enter.
 
 Two Bubble Tea details worth knowing: `Init` runs on a copy of the model and
 must not mutate it (the first load's generation is set in the constructor);

@@ -208,9 +208,11 @@ on the right, status and keys at the bottom.
 
 Opening a program verifies its directory entries — the `∘` rows turn into a
 real verdict as rsync answers, and the `changes` column says what a sync would
-move. A sync hands the terminal back: the same output, journal and conflict
-prompt as `twin sync`, then `Enter` returns to the program with fresh
-statuses.
+move. A sync runs inside the interface: the status line follows it job by job,
+each row shows its result as soon as it is done, and the preview shows the
+output. If the target has changes of its own, the preview lists them and asks
+before anything is copied: `y` overwrites and syncs, `d` shows the diffs, `n`
+syncs nothing. The checks and the journal are the same as for `twin sync`.
 
 ### Reading a dry-run
 

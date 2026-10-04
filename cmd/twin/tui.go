@@ -23,8 +23,9 @@ import (
 // jobs of one program with a multi-select column. The preview pane shows
 // the program's contents in stage 1 and the rendered sync-file excerpt in
 // stage 2. Directory jobs are verified when their program opens, and the
-// rows update as rsync answers. Syncing hands the terminal to the CLI
-// path and comes back into stage 2 with fresh statuses.
+// rows update as rsync answers. Syncing runs in the background too: the
+// status line follows it job by job, a conflict question is asked in the
+// preview pane, and stage 2 reloads with fresh statuses at the end.
 
 type stage int
 
@@ -37,8 +38,12 @@ type tuiModel struct {
 	cfg    *twin.Config
 	file   string
 	render renderer
-	// load is loadCmd; tests swap in a stub so no grubber runs.
-	load func(cfg *twin.Config, file string, gen int) tea.Cmd
+	// load is loadCmd; tests swap in a stub so no grubber runs. planSync and
+	// runSyncJob are the sync's two steps, swapped likewise so no ssh, rsync
+	// or journal write happens in a test.
+	load       func(cfg *twin.Config, file string, gen int) tea.Cmd
+	planSync   func(cfg *twin.Config, jobs []*twin.Job) syncPlanMsg
+	runSyncJob func(cfg *twin.Config, job *twin.Job, force bool) jobOutcome
 
 	programs      []*twin.Program
 	shownPrograms []*twin.Program
@@ -70,10 +75,27 @@ type tuiModel struct {
 	previewWant                               string
 	previewJob                                *twin.Job
 
+	// run is the sync in flight, nil when none; syncGen tags its messages.
+	run     *syncRun
+	syncGen int
+
 	status    string
 	statusErr bool
 	width     int
 	height    int
+}
+
+// syncRun is one sync from the first check to the last job: the jobs whose
+// target is available, a pending conflict question, and the outcomes so far.
+// Jobs run one after another, as in `twin sync`.
+type syncRun struct {
+	program   *twin.Program
+	jobs      []*twin.Job
+	conflicts []*twin.Entry
+	asking    bool   // waiting for y / d / n
+	diff      string // rendered once d was pressed
+	force     bool
+	outcomes  []jobOutcome
 }
 
 func newTUI(cfg *twin.Config, file string, render renderer) tuiModel {
@@ -82,6 +104,7 @@ func newTUI(cfg *twin.Config, file string, render renderer) tuiModel {
 	// generation the real model never saw is dropped as stale.
 	m := tuiModel{
 		cfg: cfg, file: file, render: render, load: loadCmd,
+		planSync: planSync, runSyncJob: runSyncJob,
 		loadGen: 1, loading: true, status: "loading sync-files…",
 		selected:     map[*twin.Job]bool{},
 		dryRuns:      map[string]dryRunResult{},
@@ -277,16 +300,111 @@ func (m *tuiModel) selectAll(on bool) {
 	m.updateSummary()
 }
 
-// sync hands the selected jobs to the CLI sync path.
+// sync starts a sync of the selected jobs: first the checks before the
+// first byte (availability, conflicts), then the jobs one by one.
 func (m *tuiModel) sync() tea.Cmd {
-	if m.program == nil {
+	if m.program == nil || m.run != nil {
 		return nil
 	}
 	jobs := m.selectedJobs()
 	if len(jobs) == 0 {
 		return nil
 	}
-	return syncCmd(&syncExec{cfg: m.cfg, program: m.program, jobs: jobs})
+	m.syncGen++
+	m.run = &syncRun{program: m.program}
+	m.setStatus(fmt.Sprintf("sync %s: checking target…", m.program.Name), false)
+	return syncPlanCmd(m.planSync, m.cfg, jobs, m.syncGen)
+}
+
+// applySyncPlan acts on the checks: abort on an unavailable target, ask
+// about conflicts, or start the first job.
+func (m *tuiModel) applySyncPlan(msg syncPlanMsg) tea.Cmd {
+	run := m.run
+	switch {
+	case msg.err != nil:
+		m.run = nil
+		m.setStatus("sync: "+msg.err.Error(), true)
+		return nil
+	case len(msg.reasons) > 0:
+		m.run = nil
+		m.setStatus("abort: "+strings.Join(msg.reasons, "; ")+" — nothing was synced", true)
+		return nil
+	case len(msg.ready) == 0:
+		m.run = nil
+		m.setStatus("sync: no active job selected", false)
+		return nil
+	}
+	run.jobs = msg.ready
+	if len(msg.conflicts) > 0 {
+		run.conflicts = msg.conflicts
+		run.asking = true
+		m.setStatus(fmt.Sprintf("target has %d changed file(s) — y overwrite and sync · d diff · n abort",
+			len(msg.conflicts)), true)
+		m.showPreviewPane()
+		return m.updatePreview()
+	}
+	return m.nextSyncJob()
+}
+
+// answerConflict handles a key while the conflict question is open.
+func (m *tuiModel) answerConflict(key string) tea.Cmd {
+	run := m.run
+	switch key {
+	case "y":
+		run.asking = false
+		run.force = true
+		return tea.Batch(m.nextSyncJob(), m.updatePreview())
+	case "n", "esc":
+		m.run = nil
+		m.setStatus("aborted — nothing was synced", false)
+		return m.updatePreview()
+	case "d":
+		if run.diff == "" {
+			run.diff = theme.Label.Render("rendering diff…")
+			m.updatePreview()
+			return conflictDiffCmd(run.conflicts, m.syncGen)
+		}
+	}
+	return nil
+}
+
+// nextSyncJob starts the next job, or finishes the run and reloads.
+func (m *tuiModel) nextSyncJob() tea.Cmd {
+	run := m.run
+	i := len(run.outcomes)
+	if i < len(run.jobs) {
+		job := run.jobs[i]
+		m.setStatus(fmt.Sprintf("sync %s: %d of %d · %s…", run.program.Name, i+1, len(run.jobs), job.Path), false)
+		return syncJobCmd(m.runSyncJob, m.cfg, job, run.force, m.syncGen)
+	}
+	m.lastSync = syncSummary(run.outcomes)
+	m.run = nil
+	m.reenter = run.program.Name
+	return m.startLoad()
+}
+
+// showPreviewPane opens the preview pane if it was toggled off.
+func (m *tuiModel) showPreviewPane() {
+	if !m.prev.Visible() {
+		m.prev.Toggle()
+		m.applyLayout()
+	}
+}
+
+// conflictPreview is the conflict question in the preview pane: the
+// changed files, the keys, and the diffs once asked for.
+func (m *tuiModel) conflictPreview() string {
+	run := m.run
+	var b strings.Builder
+	b.WriteString(theme.Title.Render("target has changes of its own") + "\n")
+	b.WriteString(indentStyled(conflictReport(run.conflicts), textStyle))
+	b.WriteString("\n" + footerKeyStyle.Render("y") + " " + footerDescStyle.Render("overwrite and sync") + "  " +
+		footerKeyStyle.Render("d") + " " + footerDescStyle.Render("diff") + "  " +
+		footerKeyStyle.Render("n") + " " + footerDescStyle.Render("abort, sync nothing") + "\n")
+	if run.diff != "" {
+		b.WriteString("\n" + run.diff)
+	}
+	return b.String()
 }
 
 // dryRun previews the selected jobs inside the TUI; the report replaces
@@ -316,10 +434,7 @@ func (m *tuiModel) showDryRun(msg dryRunMsg) tea.Cmd {
 			changed++
 		}
 	}
-	if !m.prev.Visible() {
-		m.prev.Toggle()
-		m.applyLayout()
-	}
+	m.showPreviewPane()
 	m.refreshJobRows()
 	verdict := fmt.Sprintf("dry-run: %d of %d job(s) would change", changed, len(msg.results))
 	if changed == 0 {
@@ -395,6 +510,11 @@ func (m *tuiModel) previewWidth() int {
 // rendered off the loop and cached per job and width.
 func (m *tuiModel) updatePreview() tea.Cmd {
 	if !m.prev.Visible() {
+		return nil
+	}
+	if m.run != nil && m.run.asking {
+		m.prev.SetTitle(m.run.program.Name, "conflicts")
+		m.prev.SetContent(m.conflictPreview())
 		return nil
 	}
 	switch m.stage {
@@ -475,15 +595,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case syncDoneMsg:
-		if msg.quit {
-			return m, tea.Quit
+	case syncPlanMsg:
+		if msg.gen != m.syncGen || m.run == nil {
+			return m, nil
 		}
-		m.recordSync(msg.outcomes)
-		if m.program != nil {
-			m.reenter = m.program.Name
+		return m, m.applySyncPlan(msg)
+
+	case syncJobMsg:
+		if msg.gen != m.syncGen || m.run == nil {
+			return m, nil
 		}
-		return m, m.startLoad()
+		m.run.outcomes = append(m.run.outcomes, msg.outcome)
+		m.recordOutcome(msg.outcome, time.Now())
+		m.refreshJobRows()
+		return m, tea.Batch(m.nextSyncJob(), m.updatePreview())
+
+	case conflictDiffMsg:
+		if msg.gen != m.syncGen || m.run == nil || !m.run.asking {
+			return m, nil
+		}
+		m.run.diff = msg.text
+		return m, m.updatePreview()
 
 	case dryRunMsg:
 		if msg.gen != m.dryRunGen || msg.program != m.program {
@@ -556,6 +688,29 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(msg)
 		return m, cmd
+	}
+
+	// A sync in flight owns the keyboard: the conflict question takes its
+	// answer, and while jobs run only moving around is allowed — no second
+	// sync, no reload that would replace the jobs under it.
+	if m.run != nil {
+		switch {
+		case m.run.asking && key == "q":
+			return m, tea.Quit // nothing has been synced yet
+		case m.run.asking && (key == "y" || key == "n" || key == "d" || key == "esc"):
+			return m, m.answerConflict(key)
+		case key == "K" || key == "J" || key == "p":
+			// preview scrolling and toggling, handled below
+		case m.run.asking:
+			return m, nil
+		case key == "up" || key == "down" || key == "k" || key == "j" ||
+			key == "pgup" || key == "pgdown" || key == "home" || key == "end":
+			var cmd tea.Cmd
+			m.jobTable, cmd = m.jobTable.Update(msg)
+			return m, cmd
+		default:
+			return m, nil
+		}
 	}
 
 	switch key {
@@ -722,11 +877,22 @@ var (
 		{"d", "dry-run → preview"}, {"esc", "back"}, {"/", "filter"}, {"v", "re-verify"},
 		{"p", "preview"}, {"q", "quit"},
 	}
+	conflictHints = []hint{
+		{"y", "overwrite and sync"}, {"d", "diff"}, {"n/esc", "abort"}, {"J/K", "scroll"}, {"q", "quit"},
+	}
+	syncingHints = []hint{
+		{"↑/↓", "move"}, {"J/K", "scroll"}, {"p", "preview"}, {"ctrl+c", "quit"},
+	}
 )
 
 func (m tuiModel) keyHints() string {
 	hints := programHints
-	if m.stage == stageJobs {
+	switch {
+	case m.run != nil && m.run.asking:
+		hints = conflictHints
+	case m.run != nil:
+		hints = syncingHints
+	case m.stage == stageJobs:
 		hints = jobHints
 	}
 	parts := make([]string, len(hints))
@@ -752,35 +918,38 @@ func pickAndSync(cfg *twin.Config, file string) error {
 	return runTUI(cfg, file)
 }
 
-// recordSync keeps what the sync did to each job, so the row and the
-// preview can show it after the reload; a dry-run verdict for the same job
-// is superseded.
-func (m *tuiModel) recordSync(outcomes []jobOutcome) {
-	if len(outcomes) == 0 {
-		return
+// recordOutcome keeps what the sync did to a job, so the row and the
+// preview show it at once and after the reload; a dry-run verdict for the
+// same job is superseded.
+func (m *tuiModel) recordOutcome(o jobOutcome, at time.Time) {
+	r := syncResult{ok: o.ok, transferred: o.transferred, output: o.output, at: at}
+	if o.transferred {
+		r.changes = len(twin.ParseItemized(o.output))
 	}
-	now := time.Now()
+	key := jobKey(o.job)
+	m.syncResults[key] = r
+	delete(m.dryRuns, key)
+	// The verdict from before the sync is stale; the reopen re-verifies.
+	delete(m.drifts, key)
+	delete(m.driftAt, key)
+}
+
+// syncSummary is the run's verdict for the status line.
+func syncSummary(outcomes []jobOutcome) string {
 	changed, failed := 0, 0
 	for _, o := range outcomes {
-		r := syncResult{ok: o.ok, transferred: o.transferred, output: o.output, at: now}
 		if o.transferred {
-			r.changes = len(twin.ParseItemized(o.output))
 			changed++
 		}
 		if !o.ok {
 			failed++
 		}
-		key := jobKey(o.job)
-		m.syncResults[key] = r
-		delete(m.dryRuns, key)
-		// The verdict from before the sync is stale; the reopen re-verifies.
-		delete(m.drifts, key)
-		delete(m.driftAt, key)
 	}
-	m.lastSync = fmt.Sprintf("synced %d of %d changed", changed, len(outcomes))
+	s := fmt.Sprintf("synced %d of %d changed", changed, len(outcomes))
 	if failed > 0 {
-		m.lastSync += fmt.Sprintf(", %d failed", failed)
+		s += fmt.Sprintf(", %d failed", failed)
 	}
+	return s
 }
 
 // changesCell says what a sync would move (or just did), from the most
