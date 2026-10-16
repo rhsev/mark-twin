@@ -138,3 +138,59 @@ func TestMountedRootIsNot(t *testing.T) {
 	}
 	_ = os.TempDir
 }
+
+func TestPathsNotNFC(t *testing.T) {
+	root := t.TempDir()
+
+	// Zerlegt geschrieben: "a" + kombinierendes Trema. Genau so legen Apple
+	// Mail und DEVONthink ihre Namen ab, und so wandern sie beim Ablegen
+	// weiter. Auf APFS faellt es nie auf, gegen ein Linux-Ziel schon.
+	nfd := "Prüfung.md"
+	nfc := "Prüfung.md"
+
+	ordner := filepath.Join(root, "Verträge")
+	if err := os.MkdirAll(ordner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{
+		filepath.Join(root, nfd),
+		filepath.Join(root, nfc),
+		filepath.Join(root, "ohne-umlaut.md"),
+		filepath.Join(ordner, "egal.md"),
+	} {
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Versteckte Namen zaehlen nicht: sie werden nicht synchronisiert.
+	if err := os.WriteFile(filepath.Join(root, ".versteckẗ.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := PathsNotNFC(root, 0)
+
+	// Erwartet: die zerlegte Datei und der zerlegte Ordner. Die Datei IM
+	// Ordner nicht — ihr eigener Name ist sauber, und den Ordner umzubenennen
+	// korrigiert ihren Pfad ohnehin mit.
+	namen := map[string]bool{}
+	for _, p := range got {
+		namen[filepath.Base(p)] = true
+	}
+	if len(got) != 2 || !namen[nfd] || !namen["Verträge"] {
+		t.Fatalf("erwartet die zerlegte Datei und den zerlegten Ordner, bekommen: %v", got)
+	}
+
+	// Grenze greift.
+	if g := PathsNotNFC(root, 1); len(g) != 1 {
+		t.Fatalf("limit 1 ergab %d Treffer: %v", len(g), g)
+	}
+
+	// Ein sauberer Baum meldet nichts.
+	sauber := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sauber, nfc), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if g := PathsNotNFC(sauber, 0); len(g) != 0 {
+		t.Fatalf("sauberer Baum meldete: %v", g)
+	}
+}

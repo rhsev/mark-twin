@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // LoadJobs runs grubber over scanPath (or the configured sync_dir), builds
@@ -301,7 +303,18 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 		if err != nil {
 			return nil, err
 		}
-		fields[f] = s
+		// Pfade in NFC normalisieren. macOS liefert zerlegte Namen (NFD): Apple
+		// Mail und DEVONthink schreiben sie ausnahmslos so, und was man aus
+		// ihnen heraus ablegt, traegt sie weiter. rsync vergleicht Namen
+		// byteweise und normalisiert nicht, twin tat es bisher auch nicht.
+		// Zwischen zwei Macs faellt das nie auf, weil APFS beide Formen auf
+		// dieselbe Datei aufloest; gegen ein Linux-Ziel sind es zwei Eintraege,
+		// die gleich aussehen und bei jedem Lauf neu uebertragen werden.
+		//
+		// Das deckt die in der Definition genannten Pfade ab, nicht die
+		// Dateinamen darunter: Die holt rsync aus dem Dateisystem. Dafuer
+		// warnt PathsNotNFC weiter unten.
+		fields[f] = norm.NFC.String(s)
 	}
 	path := fields["Path"]
 	source := fields["Source"]

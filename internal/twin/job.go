@@ -1,10 +1,13 @@
 package twin
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Status is the verdict on one job or program.
@@ -101,6 +104,46 @@ func (j *Job) TargetPath() string {
 
 // IsRemote reports whether the target is an ssh target.
 func (j *Job) IsRemote() bool { return IsRemote(j.Target) }
+
+// PathsNotNFC lists entries under root whose own name is not in NFC, newest
+// finding first and at most limit of them.
+//
+// Why this matters only for remote targets: macOS writes decomposed names
+// (NFD), and APFS resolves both forms to the same file, so a Mac-to-Mac job
+// never notices. rsync compares names byte for byte and normalises nothing, so
+// on a Linux target the two forms become two entries that look identical and
+// transfer again on every run.
+//
+// The source of such names is ordinary use rather than damage: Apple Mail and
+// DEVONthink write decomposed names without exception, and filing anything out
+// of them carries the form along.
+//
+// Only the entry's own name is checked, not the whole path: a single
+// misnamed directory would otherwise report every file beneath it, and
+// renaming that directory fixes all of them at once.
+func PathsNotNFC(root string, limit int) []string {
+	var found []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // unreadable corners are not this check's business
+		}
+		name := d.Name()
+		if name == "" || strings.HasPrefix(name, ".") {
+			if d.IsDir() && p != root {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if norm.NFC.String(name) != name {
+			found = append(found, p)
+		}
+		if limit > 0 && len(found) >= limit {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
 
 // Verify is the positive form of SkipVerify.
 func (j *Job) Verify() bool { return !j.SkipVerify }
