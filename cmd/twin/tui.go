@@ -819,13 +819,16 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.updatePreview()
 	case "K", "J":
 		// Scroll the preview without moving the table cursor.
-		dir := tea.KeyUp
+		//
+		// matterbase 0.8.0 replaced the bubbletea-style Update with a direct
+		// ScrollLines. One line per press, which is what the key event did
+		// before; ScrollPages exists for a whole screen.
+		n := -1
 		if key == "J" {
-			dir = tea.KeyDown
+			n = 1
 		}
-		var cmd tea.Cmd
-		m.prev, cmd = m.prev.Update(tea.KeyMsg{Type: dir})
-		return m, cmd
+		m.prev.ScrollLines(n)
+		return m, nil
 	case "r":
 		if m.program != nil {
 			m.reenter = m.program.Name
