@@ -40,11 +40,13 @@ type tuiModel struct {
 	file   string
 	render renderer
 	// load is loadCmd; tests swap in a stub so no grubber runs. planSync and
-	// runSyncJob are the sync's two steps, swapped likewise so no ssh, rsync
-	// or journal write happens in a test.
+	// runSyncJob are the sync's two steps, and drift is one directory's
+	// verification, swapped likewise so no ssh, rsync or journal write happens
+	// in a test.
 	load       func(cfg *twin.Config, file string, gen int) tea.Cmd
 	planSync   func(cfg *twin.Config, jobs []*twin.Job) syncPlanMsg
 	runSyncJob func(cfg *twin.Config, job *twin.Job, force bool) jobOutcome
+	drift      func(cfg *twin.Config, job *twin.Job, gen int) tea.Cmd
 
 	programs      []*twin.Program
 	shownPrograms []*twin.Program
@@ -111,7 +113,7 @@ func newTUI(cfg *twin.Config, file string, render renderer) tuiModel {
 	// generation the real model never saw is dropped as stale.
 	m := tuiModel{
 		cfg: cfg, file: file, render: render, load: loadCmd,
-		planSync: planSync, runSyncJob: runSyncJob,
+		planSync: planSync, runSyncJob: runSyncJob, drift: driftCmd,
 		loadGen: 1, loading: true,
 		selected:     map[*twin.Job]bool{},
 		dryRuns:      map[string]dryRunResult{},
@@ -164,7 +166,7 @@ func (m *tuiModel) startVerify(jobs []*twin.Job) tea.Cmd {
 	m.verifyTotal = len(candidates)
 	cmds := make([]tea.Cmd, len(candidates))
 	for i, j := range candidates {
-		cmds[i] = driftCmd(m.cfg, j, m.verifyGen)
+		cmds[i] = m.drift(m.cfg, j, m.verifyGen)
 	}
 	return tea.Batch(cmds...)
 }
@@ -191,7 +193,23 @@ func (m *tuiModel) applyPrograms(programs []*twin.Program) tea.Cmd {
 		m.leaveProgram()
 	}
 	m.updateSummary()
-	return m.updatePreview()
+	// Verify the directories right away instead of waiting for the v key.
+	// Answers arrive one row at a time and the table stays usable while they
+	// do. DriftCandidates keeps this to the directory jobs that can be
+	// verified, so the wait grows with the number of hosts reached over ssh
+	// and not with the number of programs. There is nothing here worth
+	// capping; a host that is switched off costs its connect timeout once.
+	verify := m.startVerify(allJobs(m.programs))
+	return tea.Batch(verify, m.updatePreview())
+}
+
+// allJobs collects the jobs of every program, in list order.
+func allJobs(programs []*twin.Program) []*twin.Job {
+	var jobs []*twin.Job
+	for _, p := range programs {
+		jobs = append(jobs, p.Jobs...)
+	}
+	return jobs
 }
 
 func (m *tuiModel) refreshProgramRows() {
@@ -842,11 +860,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			return m, tea.Quit
 		case "v":
-			var jobs []*twin.Job
-			for _, p := range m.programs {
-				jobs = append(jobs, p.Jobs...)
-			}
-			cmd := m.startVerify(jobs)
+			cmd := m.startVerify(allJobs(m.programs))
 			m.updateSummary()
 			return m, cmd
 		}

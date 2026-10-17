@@ -97,7 +97,7 @@ make build            # ./twin
 make install          # copies to /usr/local/bin (PREFIX=… to change)
 ```
 
-Needs Go 1.26.5 or newer.
+Needs Go 1.27 or newer.
 </details>
 
 <details>
@@ -196,21 +196,30 @@ failed.
 Two stages, one screen: a filter on top, the table in the middle, the preview
 on the right. At the bottom, a line says what is running (loading,
 verifying, syncing) and the next one shows the last result, or a hint:
-grey rows are not verified yet, and `v` checks them with rsync.
+grey rows are not verified yet, and `v` checks them again with rsync.
 
 | Stage 1 — programs | | Stage 2 — paths of one program | |
 |---|---|---|---|
 | `enter` | open the program | `space` / `tab` | toggle the path |
 | `/` | filter by name | `a` / `u` | select all / none |
-| `v` | verify all directories in the background | `enter` | sync the selection (or the current row) |
+| `v` | verify all directories again | `enter` | sync the selection (or the current row) |
 | `r` | reload the sync-files | `d` | dry-run the selection, verdict onto the row |
 | `p` | show/hide the preview | `v` | re-verify the directories |
 | `J` / `K` | scroll the preview | `esc` | back to the programs |
 | `esc` / `q` | quit | `q` | quit |
 
-Opening a program verifies its directory entries — the `∘` rows turn into a
-real verdict as rsync answers, and the `changes` column says what a sync would
-move. A sync runs inside the interface: the status line follows it job by job,
+Opening twin verifies the directories, without waiting for a key. The `∘`
+rows turn into a real verdict as rsync answers, the `changes` column says what
+a sync would move, and the table can be used while the answers come in.
+
+Only directory jobs are asked about. A file job already carries an mtime
+verdict, and a disabled or unreachable job is left alone. The wait grows with
+the number of machines reached over ssh, not with the number of programs, and a
+machine that is switched off costs its connect timeout of five seconds. To open
+twin without network traffic, keep the sync-files whose targets are local in
+their own directory and name it on the command line: `twin ./local/`.
+
+A sync runs inside the interface: the status line follows it job by job,
 each row shows its result as soon as it is done, and the preview shows the
 output. If the target has changes of its own, the preview lists them and asks
 before anything is copied: `y` overwrites and syncs, `d` shows the diffs, `n`

@@ -434,12 +434,18 @@ func TestTUIVerificationSurvivesReload(t *testing.T) {
 	}
 	m := newTUI(twin.NewConfig(), "", stubRenderer)
 	m.load = func(*twin.Config, string, int) tea.Cmd { return nil }
+	// The automatic verification on open must not reach rsync here; the
+	// verdicts below are fed in by hand.
+	m.drift = func(*twin.Config, *twin.Job, int) tea.Cmd { return nil }
 	m, _ = pump(m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	m, _ = pump(m, programsMsg{gen: m.loadGen, programs: dirPrograms()})
 	if m.programs[0].Status() != twin.StatusUnverified {
 		t.Fatalf("directory rows start unverified, got %s", m.programs[0].Status())
 	}
-	// As if `v` had verified both programs.
+	if m.verifyTotal != 2 {
+		t.Fatalf("opening must start the verification itself, got %d", m.verifyTotal)
+	}
+	// As if the answers had arrived.
 	for _, p := range m.programs {
 		m, _ = pump(m, driftMsg{gen: m.verifyGen, job: p.Jobs[0], drift: &twin.Drift{}})
 	}
@@ -463,9 +469,10 @@ func TestTUIVerificationSurvivesReload(t *testing.T) {
 	}
 }
 
-// The footer's first line says what is running — loading at the start —
-// and falls back to the summary; the second line suggests v while rows
-// are unverified, and gives way to a result.
+// The footer's first line says what is running — loading, then the
+// verification that follows it by itself — and falls back to the summary; the
+// second line suggests v while rows are unverified and nothing is running,
+// and gives way to a result.
 func TestTUIFooterActivityAndSuggestion(t *testing.T) {
 	dir := func(name, path string) *twin.Job {
 		return &twin.Job{Program: name, Path: path, SyncFile: "/sync/a.md", Active: 1, Directory: true,
@@ -473,6 +480,7 @@ func TestTUIFooterActivityAndSuggestion(t *testing.T) {
 	}
 	m := newTUI(twin.NewConfig(), "", stubRenderer)
 	m.load = func(*twin.Config, string, int) tea.Cmd { return nil }
+	m.drift = func(*twin.Config, *twin.Job, int) tea.Cmd { return nil }
 	m, _ = pump(m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	if act, busy := m.activity(); !busy || !strings.Contains(act, "loading") || !strings.Contains(m.View(), "loading sync-files") {
 		t.Fatalf("the start must say it is loading: %q", act)
@@ -481,16 +489,7 @@ func TestTUIFooterActivityAndSuggestion(t *testing.T) {
 		{Name: "alpha", Jobs: []*twin.Job{dir("alpha", "one")}},
 		{Name: "beta", Jobs: []*twin.Job{dir("beta", "two")}},
 	}})
-	if act, busy := m.activity(); busy || act != "2 programs" {
-		t.Errorf("idle, the first line is the summary: %q", act)
-	}
-	if view := m.View(); !strings.Contains(view, "2 programs not verified yet (grey) — press v") {
-		t.Errorf("unverified rows must suggest v:\n%s", view)
-	}
-
-	// v without running rsync: count what startVerify would start.
-	m.verifyGen++
-	m.verifying, m.verifyTotal = 2, 2
+	// Loading hands straight over to the verification, without a v.
 	if act, busy := m.activity(); !busy || !strings.Contains(act, "verifying 2 directories") {
 		t.Errorf("verification must show as activity: %q", act)
 	}
@@ -500,8 +499,20 @@ func TestTUIFooterActivityAndSuggestion(t *testing.T) {
 	for _, p := range m.programs {
 		m, _ = pump(m, driftMsg{gen: m.verifyGen, job: p.Jobs[0], drift: &twin.Drift{}})
 	}
-	if _, busy := m.activity(); busy || m.suggestion() != "" {
-		t.Error("all verified: nothing running, nothing to suggest")
+	if act, busy := m.activity(); busy || act != "2 programs" {
+		t.Errorf("idle, the first line is the summary: %q", act)
+	}
+	if m.suggestion() != "" {
+		t.Errorf("all verified: nothing to suggest, got %q", m.suggestion())
+	}
+
+	// Rows that stayed unverified — an absent host answers with an error —
+	// get the v suggestion back once nothing is running.
+	m.programs[0].Jobs[0].Drift = nil
+	delete(m.drifts, jobKey(m.programs[0].Jobs[0]))
+	m.refreshProgramRows()
+	if sug := m.suggestion(); !strings.Contains(sug, "1 program not verified yet (grey) — press v") {
+		t.Errorf("an unverified row must suggest v: %q", sug)
 	}
 
 	m.setStatus("dry-run: nothing would change", false)

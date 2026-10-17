@@ -163,7 +163,8 @@ sync-file (`Source: "{{src.home}}"`). See
 filter on top, table in the middle, preview on the right, and a footer of
 three lines: what is running (with a spinner: loading, verifying with a
 count, a sync's current job) or the summary when idle; the last result or
-error, or else a suggestion (`v` while rows are unverified); the key hints.
+error, or else a suggestion (`v` while rows are unverified and nothing is
+running); the key hints.
 The spinner ticks only while something is in flight (`activity`).
 
 1. **Stage 1: programs.** One `recordtable` row per merged program
@@ -171,8 +172,9 @@ The spinner ticks only while something is in flight (`activity`).
    case-insensitive, and a trailing bracket group joins by convention).
    The merge is display-only; the data model, `status`, `sync -p` and JSON
    keep the per-file programs. The preview pane shows the program's paths
-   in their status colour. `v` verifies every directory job in the
-   background.
+   in their status colour. The program list starts the verification of every
+   directory job itself (`applyPrograms`), so the stage opens into answers
+   rather than into grey; `v` runs it again.
 2. **Stage 2: paths of one program.** Columns: selection (`■`), status,
    path, mtime delta, `changes`, sync-file. Opening a program verifies its
    directory jobs (`DetectDrift`, at most four rsync dry-runs in flight);
