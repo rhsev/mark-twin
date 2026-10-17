@@ -182,26 +182,24 @@ func RunJob(cfg *Config, job *Job, dryRun, force bool) (bool, string, bool) {
 		return false, "source not found: " + src, false
 	}
 
-	// Zerlegte Namen melden, bevor sie auf ein Linux-Ziel wandern. Dort sind
-	// NFC und NFD zwei Eintraege, die gleich aussehen; rsync normalisiert
-	// nichts und traegt sie bei jedem Lauf erneut. Zwischen zwei Macs faellt
-	// es nicht auf, weil APFS beide Formen auf dieselbe Datei aufloest —
-	// deshalb nur bei entfernten Zielen pruefen und nicht bei jedem Lauf
-	// ueber lokale Baeume wandern.
+	// Report decomposed names before they travel to a Linux target, where NFC
+	// and NFD are two entries that look alike: rsync normalises nothing and
+	// transfers them again on every run. Between two Macs it never shows,
+	// because APFS resolves both forms to the same file, so only remote jobs
+	// are checked and no local tree is walked for this.
 	//
-	// Nur melden, nicht abbrechen: Der Lauf selbst ist nicht falsch, und wer
-	// hier blockiert, nimmt dem Nutzer die Entscheidung ab. Umbenannt wird
-	// von Hand, denn twin besitzt die Dateien nicht.
-	var hinweis string
+	// Reported, not refused. The run itself is correct, and the renaming is
+	// the user's call because twin does not own the files.
+	var note string
 	if job.IsRemote() {
 		if odd := PathsNotNFC(src, 4); len(odd) > 0 {
-			namen := make([]string, 0, len(odd))
+			names := make([]string, 0, len(odd))
 			for _, p := range odd {
-				namen = append(namen, filepath.Base(p))
+				names = append(names, filepath.Base(p))
 			}
-			hinweis = fmt.Sprintf("Hinweis: %d Name(n) nicht in NFC (%s). "+
-				"Auf dem Linux-Ziel werden sie bei jedem Lauf neu uebertragen; nach NFC umbenennen.\n",
-				len(odd), strings.Join(namen, ", "))
+			note = fmt.Sprintf("note: %d name(s) not in NFC (%s). "+
+				"A Linux target transfers them again on every run; rename them to NFC.\n",
+				len(odd), strings.Join(names, ", "))
 		}
 	}
 
@@ -243,7 +241,7 @@ func RunJob(cfg *Config, job *Job, dryRun, force bool) (bool, string, bool) {
 			output += "\ncmd skipped (nothing transferred)"
 		}
 	}
-	return true, hinweis + output, xfr
+	return true, note + output, xfr
 }
 
 // RsyncArgs is the full rsync argument vector for a job.

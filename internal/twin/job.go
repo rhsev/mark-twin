@@ -114,9 +114,9 @@ func (j *Job) IsRemote() bool { return IsRemote(j.Target) }
 // on a Linux target the two forms become two entries that look identical and
 // transfer again on every run.
 //
-// The source of such names is ordinary use rather than damage: Apple Mail and
-// DEVONthink write decomposed names without exception, and filing anything out
-// of them carries the form along.
+// Such names come out of ordinary use rather than damage. Some macOS
+// applications write decomposed names throughout, and filing anything out of
+// them carries the form along.
 //
 // Only the entry's own name is checked, not the whole path: a single
 // misnamed directory would otherwise report every file beneath it, and

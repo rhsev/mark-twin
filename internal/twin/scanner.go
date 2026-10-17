@@ -303,17 +303,16 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Pfade in NFC normalisieren. macOS liefert zerlegte Namen (NFD): Apple
-		// Mail und DEVONthink schreiben sie ausnahmslos so, und was man aus
-		// ihnen heraus ablegt, traegt sie weiter. rsync vergleicht Namen
-		// byteweise und normalisiert nicht, twin tat es bisher auch nicht.
-		// Zwischen zwei Macs faellt das nie auf, weil APFS beide Formen auf
-		// dieselbe Datei aufloest; gegen ein Linux-Ziel sind es zwei Eintraege,
-		// die gleich aussehen und bei jedem Lauf neu uebertragen werden.
+		// Normalise paths to NFC. Some macOS applications write decomposed
+		// names (NFD) and filing anything out of them carries the form along.
+		// rsync compares names byte for byte and normalises nothing, and twin
+		// did not either. Between two Macs it never shows, because APFS
+		// resolves both forms to the same file; against a Linux target they
+		// are two entries that look alike and transfer again on every run.
 		//
-		// Das deckt die in der Definition genannten Pfade ab, nicht die
-		// Dateinamen darunter: Die holt rsync aus dem Dateisystem. Dafuer
-		// warnt PathsNotNFC weiter unten.
+		// This covers the paths named in a definition, not the filenames
+		// below them, which rsync takes from the file system. PathsNotNFC
+		// reports those.
 		fields[f] = norm.NFC.String(s)
 	}
 	path := fields["Path"]
