@@ -114,7 +114,9 @@ func SuggestExcludes(path string) []string {
 	return out
 }
 
-// BuildBlock renders the Markdown block for one sync entry.
+// BuildBlock renders the Markdown block for one sync entry: an H3 heading,
+// the notes, then the yaml block, the shape every entry writer uses. Older
+// sync-files with H2 entries read the same; twin never rewrites them.
 func BuildBlock(program, path, description string, excludes []string, delete bool, cmd, prose string) string {
 	lines := []string{"Program: " + program, "Path: " + path}
 	if description != "" {
@@ -132,7 +134,7 @@ func BuildBlock(program, path, description string, excludes []string, delete boo
 	if prose == "" {
 		prose = "TODO: document why this path is synced."
 	}
-	return fmt.Sprintf("\n## %s\n\n%s\n\n```yaml\n%s\n```\n", program, prose, strings.Join(lines, "\n"))
+	return fmt.Sprintf("\n### %s\n\n%s\n\n```yaml\n%s\n```\n", program, prose, strings.Join(lines, "\n"))
 }
 
 // FrontmatterText renders the frontmatter of a new sync-file.

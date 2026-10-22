@@ -104,13 +104,13 @@ func TestPreview(t *testing.T) {
 	if got := ExtractIntro([]string{"only"}); got != "only" {
 		t.Errorf("intro without h2: %q", got)
 	}
-	if s, e, ok := FindBlock([]string{"```yaml", "Program: foo", "Path: .config/foo", "```"}, ".config/foo"); !ok || s != 0 || e != 3 {
-		t.Errorf("find block: %d %d %v", s, e, ok)
+	if got := ExtractSectionFor([]string{"```yaml", "Program: foo", "Path: .config/foo", "```"}, ".config/foo"); got != "```yaml\nProgram: foo\nPath: .config/foo\n```" {
+		t.Errorf("find block: %q", got)
 	}
-	if _, _, ok := FindBlock([]string{"```yaml", "Path: other", "```"}, ".config/foo"); ok {
-		t.Error("find block no match")
+	if got := ExtractSectionFor([]string{"```yaml", "Path: other", "```"}, ".config/foo"); got != "" {
+		t.Errorf("find block no match: %q", got)
 	}
-	if _, _, ok := FindBlock([]string{"```yaml", "Path: '.config/foo'", "```"}, ".config/foo"); !ok {
+	if got := ExtractSectionFor([]string{"```yaml", "Path: '.config/foo'", "```"}, ".config/foo"); got == "" {
 		t.Error("find block quoted path")
 	}
 
@@ -218,7 +218,7 @@ func TestAddHelpers(t *testing.T) {
 	}
 
 	block := BuildBlock("fish", ".config/fish", "", nil, false, "", "")
-	for _, want := range []string{"## fish", "Program: fish", "Path: .config/fish", "TODO: document why"} {
+	for _, want := range []string{"\n### fish\n", "Program: fish", "Path: .config/fish", "TODO: document why"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("minimal block lacks %q", want)
 		}
@@ -266,3 +266,24 @@ func TestJobJSONShape(t *testing.T) {
 		t.Errorf("json: %v\n%s", err, data)
 	}
 }
+
+// A yml fence with the same Path is an example; the preview finds the yaml
+// block, under an H3 entry as under an older H2 one.
+func TestExtractSectionForSkipsYml(t *testing.T) {
+	lines := []string{"### Example", "", "```yml", "Path: .config/fish", "```", "", "### Fish", "", "Notes.", "", "```yaml", "Path: .config/fish", "```"}
+	got := ExtractSectionFor(lines, ".config/fish")
+	if !strings.HasPrefix(got, "### Fish") || strings.Contains(got, "Example") {
+		t.Errorf("section = %q", got)
+	}
+}
+
+// The section is the entry: heading, the notes before the block, the block.
+// Notes after the block belong to no entry, as the other tools read them.
+func TestExtractSectionForIsTheEntry(t *testing.T) {
+	lines := []string{"## Fish Shell", "", "Why it is synced.", "", "```yaml", "Path: .config/fish", "```", "", "A note after the block.", "", "## Next"}
+	want := "## Fish Shell\n\nWhy it is synced.\n\n```yaml\nPath: .config/fish\n```"
+	if got := ExtractSectionFor(lines, ".config/fish"); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+

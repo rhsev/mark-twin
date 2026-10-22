@@ -17,7 +17,7 @@ Source: /Users/admin
 Target: admin@macbook:/Users/admin
 ---
 
-## Fish Shell
+### Fish Shell
 
 Shell config, including completions and abbreviations. `local.fish` stays
 machine-specific, the MacBook keeps its own configuration.
@@ -257,6 +257,12 @@ One Markdown file per relationship. Frontmatter sets it up, YAML blocks define
 the individual paths. Frontmatter fields are merged into every block, so
 `Source:`/`Target:` are usually written once at the top — but a block may
 override them, which is how one file can serve several destinations.
+
+Each entry is a heading, the notes about it, then its block. `twin add`
+writes the heading as H3; any level works, so older files with H2 entries
+need no change. Notes after a block belong to no entry, and the preview leaves
+them out. The rules come from grubber's package `entry`. Only a ` ```yaml ` fence is read; a ` ```yml ` fence is an
+example and stays text.
 
 Blocks sharing a `Program` are grouped: they are selected together, synced
 together, and **run in the order they appear in the file**.

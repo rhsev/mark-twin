@@ -4,18 +4,16 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/rhsev/grubber/entry"
 )
 
 // Compact markdown preview for a single sync block: frontmatter + intro
-// (text before the first H2) + the heading section that contains the YAML
-// block for a given path.
+// (text before the first H2) + the block's entry (heading, notes, block).
 
 var (
-	yamlFence   = regexp.MustCompile("^```ya?ml\\s*$")
-	fenceEnd    = regexp.MustCompile("^```\\s*$")
 	headingLine = regexp.MustCompile(`^(#{1,6})\s`)
 	h2Plus      = regexp.MustCompile(`^#{2,6}\s`)
-	pathKey     = regexp.MustCompile(`^Path:\s*['"]?([^'"]+?)['"]?\s*$`)
 	fmSeparator = regexp.MustCompile(`(?m)^---\s*$\n`)
 )
 
@@ -81,56 +79,40 @@ func ExtractIntro(lines []string) string {
 	return strings.TrimSpace(strings.Join(lines[:idx], "\n"))
 }
 
-// ExtractSectionFor locates the YAML block whose Path: matches target, then
-// returns the surrounding heading section (nearest preceding heading until
-// the next heading of equal-or-higher level).
+// ExtractSectionFor finds the YAML block whose Path is target and returns its
+// entry: the heading, the notes before the block, and the block, by the rules
+// of grubber's package entry (the notes are the text between the block and
+// the nearest heading, block or --- line above it; text after a block
+// belongs to no entry).
 func ExtractSectionFor(lines []string, target string) string {
-	blockStart, blockEnd, ok := FindBlock(lines, target)
-	if !ok {
-		return ""
-	}
-
-	sectionStart := blockStart
-	for i := blockStart - 1; i >= 0; i-- {
-		if headingLine.MatchString(lines[i]) {
-			sectionStart = i
-			break
-		}
-	}
-
-	sectionEnd := len(lines) - 1
-	if m := headingLine.FindStringSubmatch(lines[sectionStart]); m != nil {
-		level := len(m[1])
-		for i := blockEnd + 1; i < len(lines); i++ {
-			if m2 := headingLine.FindStringSubmatch(lines[i]); m2 != nil && len(m2[1]) <= level {
-				sectionEnd = i - 1
-				break
-			}
-		}
-	}
-	return strings.TrimSpace(strings.Join(lines[sectionStart:sectionEnd+1], "\n"))
-}
-
-// FindBlock returns the fence lines of the YAML block whose Path: is target.
-func FindBlock(lines []string, target string) (start, end int, ok bool) {
-	i := 0
-	for i < len(lines) {
-		if !yamlFence.MatchString(lines[i]) {
-			i++
+	for _, b := range entry.ParseBlocks(lines) {
+		if !b.Matches([][2]string{{"Path", target}}) {
 			continue
 		}
-		k := i + 1
-		matched := false
-		for k < len(lines) && !fenceEnd.MatchString(lines[k]) {
-			if m := pathKey.FindStringSubmatch(lines[k]); m != nil && m[1] == target {
-				matched = true
-			}
-			k++
+		var parts []string
+		if h := headingLineFor(lines, b); h != "" {
+			parts = append(parts, h)
 		}
-		if matched {
-			return i, k, true
+		if prose := b.Prose(lines); prose != "" {
+			parts = append(parts, prose)
 		}
-		i = k + 1
+		parts = append(parts, strings.Join(lines[b.Open:b.Close+1], "\n"))
+		return strings.Join(parts, "\n\n")
 	}
-	return 0, 0, false
+	return ""
+}
+
+// headingLineFor returns the heading line of b's entry as it stands in the
+// file, so the preview keeps its level.
+func headingLineFor(lines []string, b entry.Block) string {
+	if b.Heading == "" {
+		return ""
+	}
+	for i := b.Open - 1; i >= 0; i-- {
+		if m := headingLine.FindStringSubmatch(lines[i]); m != nil &&
+			strings.TrimSpace(strings.TrimRight(strings.TrimSpace(lines[i][len(m[1]):]), "#")) == b.Heading {
+			return lines[i]
+		}
+	}
+	return ""
 }
