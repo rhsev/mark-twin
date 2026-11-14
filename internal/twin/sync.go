@@ -209,11 +209,32 @@ func RunJob(cfg *Config, job *Job, dryRun, force bool) (bool, string, bool) {
 		if !dryRun && !MkdirP(host, dir, job.Sudo) {
 			return false, fmt.Sprintf("ssh: could not create %s on %s", dir, host), false
 		}
-	} else if err := os.MkdirAll(filepath.Dir(tgt), 0o755); err != nil {
-		return false, err.Error(), false
+	} else if !dryRun {
+		if err := os.MkdirAll(filepath.Dir(tgt), 0o755); err != nil {
+			return false, err.Error(), false
+		}
 	}
 
-	output, code, err := RunCommand(RsyncArgs(cfg, job, dryRun, force)...)
+	args := RsyncArgs(cfg, job, dryRun, force)
+	// A dry run creates nothing, and rsync refuses a target whose parent
+	// directory is missing. Such a target is itself missing, so an empty
+	// directory in its place gives the same listing.
+	if dryRun && !job.IsRemote() && !exists(filepath.Dir(tgt)) {
+		empty, err := os.MkdirTemp("", "twin-dry-run-*")
+		if err != nil {
+			return false, err.Error(), false
+		}
+		defer os.RemoveAll(empty)
+		last := len(args) - 1
+		stand := joinPath(empty, filepath.Base(tgt))
+		if strings.HasSuffix(args[last], "/") {
+			stand += "/"
+		}
+		args[last] = stand
+		note += fmt.Sprintf("(dry-run) would create %s\n", filepath.Dir(tgt))
+	}
+
+	output, code, err := RunCommand(args...)
 	if err != nil {
 		return false, err.Error(), false
 	}
@@ -326,20 +347,33 @@ func BackupArgs(job *Job) []string {
 	if job.IsRemote() {
 		_, root = SplitRemote(job.Target)
 	}
-	dir := joinPath(joinPath(root, ".twin-backup"), runStamp())
-	return []string{"--backup", "--backup-dir=" + dir, "--exclude=.twin-backup/"}
+	dir := joinPath(joinPath(root, backupDirName), runStamp())
+	return []string{"--backup", "--backup-dir=" + dir, "--exclude=" + backupDirName + "/"}
 }
 
 var (
-	stampOnce sync.Once
-	stamp     string
+	stampMu sync.Mutex
+	stamp   string
 )
 
-// runStamp is one timestamp per twin process, so a multi-job run shares a
+// runStamp is the timestamp of the current sync run, so its jobs share a
 // backup dir.
 func runStamp() string {
-	stampOnce.Do(func() { stamp = time.Now().Format("2006-01-02_150405") })
+	stampMu.Lock()
+	defer stampMu.Unlock()
+	if stamp == "" {
+		stamp = time.Now().Format(stampLayout)
+	}
 	return stamp
+}
+
+// NewRunStamp starts a new sync run. A process that syncs more than once
+// (the TUI) calls it before each run: under one stamp, the second run of a
+// job would overwrite the first run's backup of the same file.
+func NewRunStamp() {
+	stampMu.Lock()
+	defer stampMu.Unlock()
+	stamp = time.Now().Format(stampLayout)
 }
 
 // JobResult is the outcome of syncing one job.

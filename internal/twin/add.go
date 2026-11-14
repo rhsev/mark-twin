@@ -118,18 +118,18 @@ func SuggestExcludes(path string) []string {
 // the notes, then the yaml block, the shape every entry writer uses. Older
 // sync-files with H2 entries read the same; twin never rewrites them.
 func BuildBlock(program, path, description string, excludes []string, delete bool, cmd, prose string) string {
-	lines := []string{"Program: " + program, "Path: " + path}
+	lines := []string{"Program: " + yamlScalar(program), "Path: " + yamlScalar(path)}
 	if description != "" {
-		lines = append(lines, "Description: "+description)
+		lines = append(lines, "Description: "+yamlScalar(description))
 	}
 	if len(excludes) > 0 {
-		lines = append(lines, "Exclude: "+strings.Join(excludes, ","))
+		lines = append(lines, "Exclude: "+yamlScalar(strings.Join(excludes, ",")))
 	}
 	if delete {
 		lines = append(lines, "Delete: true")
 	}
 	if cmd != "" {
-		lines = append(lines, "Cmd: "+cmd)
+		lines = append(lines, "Cmd: "+yamlScalar(cmd))
 	}
 	if prose == "" {
 		prose = "TODO: document why this path is synced."
@@ -137,13 +137,24 @@ func BuildBlock(program, path, description string, excludes []string, delete boo
 	return fmt.Sprintf("\n### %s\n\n%s\n\n```yaml\n%s\n```\n", program, prose, strings.Join(lines, "\n"))
 }
 
+// yamlScalar writes a value so that YAML reads it back as the same text:
+// plain where that is safe, quoted where a colon, a # or a leading special
+// character would change or cut the value.
+func yamlScalar(s string) string {
+	out, err := yaml.Marshal(s)
+	if err != nil {
+		return s
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
 // FrontmatterText renders the frontmatter of a new sync-file.
 func FrontmatterText(source, target, label string) string {
 	lines := []string{"---", "Active: 1"}
 	if label != "" {
-		lines = append(lines, "Label: "+label)
+		lines = append(lines, "Label: "+yamlScalar(label))
 	}
-	lines = append(lines, "Source: "+source, "Target: "+target, "---", "")
+	lines = append(lines, "Source: "+yamlScalar(source), "Target: "+yamlScalar(target), "---", "")
 	return strings.Join(lines, "\n")
 }
 

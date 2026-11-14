@@ -27,13 +27,23 @@ USAGE:
               [--force] [--skip-conflicts]
   twin add <path>            scaffold a new sync entry for a local path
   twin log    [-n N] [--json]  recent journal entries (default 20)
+  twin prune  [--days N] [--label X] [--file X] [--dry-run]
+                             remove backup runs older than N days (default 30)
   twin doctor                check tools, renderers, targets, remote hosts
   twin --help                show this message
   twin --version             show the running version
 
 FILE ARGUMENT:
-  bare name (no /)  → matched by substring against sync-file names
+  bare name (no /)  → the sync-file of exactly that name, .md optional
+  with * ? [        → pattern over the file name; quote it: --file '*vps*'
   contains /        → resolved as path; file or directory both work
+  --file may be given several times; the selections add up.
+
+SELECTING NOTHING:
+  A --file, --label or -p that selects nothing is an error (exit 1), in
+  every output format: an empty answer would read as "nothing to report".
+  -p matches program names by substring, ignoring case, and may be given
+  several times. --label takes one value.
 
 TARGET-SIDE CHANGES:
   Before syncing, twin looks for files the target changed more recently
@@ -99,6 +109,8 @@ func run(argv []string) error {
 		return cmdSync(cfg, rest)
 	case first == "add":
 		return cmdAdd(cfg, rest)
+	case first == "prune":
+		return cmdPrune(cfg, rest)
 	case first == "log":
 		return cmdLog(rest)
 	case first == "doctor":
@@ -122,24 +134,57 @@ func newFlagSet(name string) *flag.FlagSet {
 
 type filterOpts struct {
 	showAll bool
-	label   string
-	file    string
+	label   onceArg
+	files   fileArgs
 	json    bool
+}
+
+// fileArgs collects every --file of a command line (and every -p).
+type fileArgs []string
+
+func (f *fileArgs) String() string { return strings.Join(*f, ",") }
+
+func (f *fileArgs) Set(v string) error {
+	if v == "" {
+		return errors.New("needs a name, a pattern or a path")
+	}
+	*f = append(*f, v)
+	return nil
 }
 
 func parseFilterOpts(args []string) (filterOpts, error) {
 	var o filterOpts
 	fs := newFlagSet("filter")
 	fs.BoolVar(&o.showAll, "all", false, "")
-	fs.StringVar(&o.label, "label", "", "")
-	fs.StringVar(&o.file, "file", "", "")
+	fs.Var(&o.label, "label", "")
+	fs.Var(&o.files, "file", "")
 	fs.BoolVar(&o.json, "json", false, "")
 	return o, fs.Parse(args)
 }
 
+// onceArg is an option that takes one value. Given twice it is refused; the
+// flag package would keep the last value and say nothing.
+type onceArg struct {
+	value string
+	set   bool
+}
+
+func (o *onceArg) String() string { return o.value }
+
+func (o *onceArg) Set(v string) error {
+	if o.set {
+		return errors.New("given more than once")
+	}
+	if v == "" {
+		return errors.New("needs a value")
+	}
+	o.value, o.set = v, true
+	return nil
+}
+
 type syncOpts struct {
 	filterOpts
-	pattern         string
+	patterns        fileArgs
 	dryRun          bool
 	quiet           bool
 	skipUnavailable bool
@@ -152,14 +197,14 @@ func parseSyncOpts(args []string) (syncOpts, error) {
 	var o syncOpts
 	fs := newFlagSet("sync")
 	fs.BoolVar(&o.showAll, "all", false, "")
-	fs.StringVar(&o.label, "label", "", "")
-	fs.StringVar(&o.file, "file", "", "")
+	fs.Var(&o.label, "label", "")
+	fs.Var(&o.files, "file", "")
 	fs.BoolVar(&o.verbose, "v", false, "")
 	fs.BoolVar(&o.verbose, "verbose", false, "")
 	fs.BoolVar(&o.force, "force", false, "")
 	fs.BoolVar(&o.skipConflicts, "skip-conflicts", false, "")
-	fs.StringVar(&o.pattern, "p", "", "")
-	fs.StringVar(&o.pattern, "pattern", "", "")
+	fs.Var(&o.patterns, "p", "")
+	fs.Var(&o.patterns, "pattern", "")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "")
 	fs.BoolVar(&o.quiet, "q", false, "")
 	fs.BoolVar(&o.quiet, "quiet", false, "")

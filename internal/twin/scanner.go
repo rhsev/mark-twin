@@ -205,34 +205,148 @@ func verifyRemoteFileContent(host string, hostJobs []*Job) {
 }
 
 // LoadPrograms loads and filters jobs, then groups them into programs.
-// file is a sync-file argument (see ResolveFileArg); label filters on the
-// frontmatter Label; showAll keeps inactive jobs.
-func LoadPrograms(cfg *Config, file, label string, showAll bool) ([]*Program, error) {
-	scanPath, nameFilter, err := ResolveFileArg(file)
-	if err != nil {
-		return nil, err
-	}
+// files are sync-file arguments (see ResolveFileArg and selects); label
+// filters on the frontmatter Label; showAll keeps inactive jobs.
+func LoadPrograms(cfg *Config, files []string, label string, showAll bool) ([]*Program, error) {
 	// Filter first, then ask the targets: `--file vps` must not wait for
 	// the MacBook's ssh round-trip, or its timeout.
-	jobs, err := buildJobs(cfg, scanPath)
+	kept, err := LoadDefinitions(cfg, files, label, showAll)
 	if err != nil {
 		return nil, err
-	}
-	var kept []*Job
-	for _, j := range jobs {
-		if nameFilter != "" && !strings.Contains(j.SyncFile, nameFilter) {
-			continue
-		}
-		if label != "" && j.Label != label {
-			continue
-		}
-		if !showAll && j.Active != 1 {
-			continue
-		}
-		kept = append(kept, j)
 	}
 	FillTargets(kept)
 	return Group(kept), nil
+}
+
+// LoadDefinitions loads and filters jobs without asking the targets: what
+// the sync-files say, with local stats only. Several file arguments add up.
+// One that selects no sync-file is an error, and so is a label no selected
+// file carries: an empty answer would read as "nothing to report" to
+// whoever watches the output.
+func LoadDefinitions(cfg *Config, files []string, label string, showAll bool) ([]*Job, error) {
+	// One grubber run per directory to scan, in the order first named.
+	type group struct {
+		scanPath string
+		names    []string // "" selects every file of the directory
+		args     []string
+	}
+	var groups []*group
+	byPath := map[string]*group{}
+	add := func(scanPath, name, arg string) {
+		g := byPath[scanPath]
+		if g == nil {
+			g = &group{scanPath: scanPath}
+			byPath[scanPath] = g
+			groups = append(groups, g)
+		}
+		g.names = append(g.names, name)
+		g.args = append(g.args, arg)
+	}
+	for _, f := range files {
+		if f == "" {
+			continue
+		}
+		scanPath, name, err := ResolveFileArg(f)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := selects(name, "x.md"); err != nil {
+			return nil, fmt.Errorf("--file %s: %v", f, err)
+		}
+		add(scanPath, name, f)
+	}
+	if len(groups) == 0 {
+		add("", "", "")
+	}
+
+	var kept []*Job
+	labelSeen := false
+	taken := map[string]bool{} // sync-files an earlier group already supplied
+	for _, g := range groups {
+		jobs, err := buildJobs(cfg, g.scanPath)
+		if err != nil {
+			return nil, err
+		}
+		dir := g.scanPath
+		if dir == "" {
+			dir = cfg.SyncDir
+		}
+		// A sync-file without a single block yields no job and is still there.
+		present, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+		for _, j := range jobs {
+			present = append(present, j.SyncFile)
+		}
+		for i, name := range g.names {
+			if name == "" {
+				continue
+			}
+			found := false
+			for _, f := range present {
+				if ok, _ := selects(name, f); ok {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("no sync-file matches --file %s in %s", g.args[i], dir)
+			}
+		}
+		supplied := map[string]bool{}
+		for _, j := range jobs {
+			if taken[j.SyncFile] {
+				continue
+			}
+			wanted := false
+			for _, name := range g.names {
+				if ok, _ := selects(name, j.SyncFile); ok {
+					wanted = true
+					break
+				}
+			}
+			if !wanted {
+				continue
+			}
+			supplied[j.SyncFile] = true
+			if label != "" {
+				if j.Label != label {
+					continue
+				}
+				labelSeen = true
+			}
+			if !showAll && j.Active != 1 {
+				continue
+			}
+			kept = append(kept, j)
+		}
+		for f := range supplied {
+			taken[f] = true
+		}
+	}
+	// Asked before the Active filter: a label on disabled files exists.
+	if label != "" && !labelSeen {
+		return nil, fmt.Errorf("no sync-file has the label %q", label)
+	}
+	return kept, nil
+}
+
+// selects reports whether a file argument's name selects syncFile. Only the
+// file name counts, never the directory above it, and ".md" may be left
+// out. A plain name selects the file of exactly that name, whatever else is
+// in the directory. A name with *, ? or [ is a pattern over the whole file
+// name ("*vps*"). The empty name selects every file.
+func selects(name, syncFile string) (bool, error) {
+	if name == "" {
+		return true, nil
+	}
+	base := baseName(syncFile)
+	if !strings.ContainsAny(name, "*?[") {
+		return base == name || base == name+".md", nil
+	}
+	ok, err := filepath.Match(name, base)
+	if err != nil || ok {
+		return ok, err
+	}
+	return filepath.Match(name, strings.TrimSuffix(base, ".md"))
 }
 
 // ResolveFileArg turns a file argument into (scanPath, nameFilter):
@@ -241,6 +355,8 @@ func LoadPrograms(cfg *Config, file, label string, showAll bool) ([]*Program, er
 //	path to a dir   → dir, ""             scan that dir, no filter
 //	path to a file  → dirname, basename   scan parent dir, filter by filename
 //	bare name       → "", name            scan sync_dir, filter by name
+//
+// What a name selects is decided by selects.
 func ResolveFileArg(file string) (scanPath, nameFilter string, err error) {
 	if file == "" {
 		return "", "", nil
@@ -376,6 +492,12 @@ func BuildJob(r map[string]any, vars map[string]string) (*Job, error) {
 	// rsync mirrors directories, so a directory source means a directory
 	// target — also for remote jobs, whose far side can't be inspected here.
 	directory := srcExists && isDir(srcFull)
+
+	// Render substitutes tokens in one file. On a directory the sync fails,
+	// and status had nothing to compare and called it in sync.
+	if render && directory {
+		return nil, fmt.Errorf("%s: Render needs a file Path (%s is a directory)", ctx, path)
+	}
 
 	// Include narrows a directory to named entries. On a file it would turn
 	// the trailing --exclude=* against the file itself and sync nothing.

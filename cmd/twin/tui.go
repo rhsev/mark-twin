@@ -343,6 +343,7 @@ func (m *tuiModel) sync() tea.Cmd {
 		return nil
 	}
 	m.syncGen++
+	twin.NewRunStamp()
 	m.run = &syncRun{program: m.program, progress: fmt.Sprintf("sync %s: checking target…", m.program.Name)}
 	m.setStatus("", false)
 	return syncPlanCmd(m.planSync, m.cfg, jobs, m.syncGen)

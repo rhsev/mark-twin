@@ -168,17 +168,26 @@ twin ./some/dir/             # TUI — all sync-files in a directory
 twin list                    # plain listing
 twin status                  # what a sync would change, content-verified
 twin sync -p grubber         # sync one program by name pattern
-twin sync --file=repos       # sync all programs from a sync-file
+twin sync --file=repos_macbook  # sync all programs from a sync-file
 twin sync --dry-run          # preview without writing
 twin sync -v                 # rsync's full output instead of just the changes
 twin log                     # recent journal entries (-n N, --json)
+twin prune --days 30         # remove old backup runs of Delete jobs (--dry-run)
 twin doctor                  # check tools, renderers, targets, remote hosts
 twin --version               # which twin is actually running
 twin --help                  # show usage
 ```
 
-A file argument without `/` is matched by substring against sync-file names in
-`sync_dir`; anything containing `/` is treated as a path, file or directory.
+A file argument without `/` names the sync-file of exactly that name in
+`sync_dir`, with or without `.md`. With `*`, `?` or `[` it is a pattern over
+the file name, as in `--file '*vps*'`. Anything containing `/` is treated as a
+path, file or directory. `--file` may be given several times, and the
+selections add up.
+
+A `--file`, `--label` or `-p` that selects nothing ends the command with a
+message and exit code 1, in every output format. `-p` matches program names by
+substring, ignoring case, and may be given several times. `--label` takes one
+value.
 
 By default a sync prints only what changed — the lines below, plus anything a
 `Cmd` produced and any error. A job that moved nothing says so:
@@ -371,8 +380,13 @@ replication instead.
 
 `Delete: true` adds `--delete`, so files removed from the source disappear on
 the target too. Deleted and overwritten files are moved to
-`<target>/.twin-backup/<timestamp>/` rather than destroyed — a safety net worth
-pruning occasionally. It applies to `Delete` jobs only.
+`<target>/.twin-backup/<timestamp>/` rather than destroyed. Each sync run gets
+its own directory. It applies to `Delete` jobs only.
+
+Nothing removes these directories on its own. `twin prune` deletes the runs
+older than 30 days on every target of a `Delete` job, `--days N` sets another
+age, and `--dry-run` lists what would go. A target that is not mounted or not
+reachable is skipped.
 
 ### Sudo: privileged targets
 

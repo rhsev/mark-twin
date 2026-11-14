@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"regexp"
@@ -179,7 +180,7 @@ func FillDrift(cfg *Config, jobs []*Job) error {
 				if err != nil {
 					mu.Lock()
 					if firstErr == nil {
-						firstErr = err
+						firstErr = fmt.Errorf("%s: %w", j.Path, err)
 					}
 					mu.Unlock()
 					continue
@@ -222,16 +223,16 @@ func Assemble(forced []ItemizedEntry, normal, equal map[string]bool, conflict fu
 	return d
 }
 
-// Itemized runs rsync and parses its itemize output. A non-zero exit
-// (unreadable target, protocol error) reads as "nothing to report"; rsync
-// not starting at all is an error the caller must not swallow.
+// Itemized runs rsync and parses its itemize output. rsync not starting and
+// rsync failing (unreadable target, protocol error) are both errors: an empty
+// list would read as "in sync", and nothing was compared.
 func Itemized(args []string) ([]ItemizedEntry, error) {
 	output, code, err := RunCommand(args...)
 	if err != nil {
 		return nil, err
 	}
 	if code != 0 {
-		return nil, nil
+		return nil, fmt.Errorf("rsync failed (exit %d): %s", code, lastLine(output))
 	}
 	return ParseItemized(output), nil
 }

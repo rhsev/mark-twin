@@ -163,7 +163,7 @@ func indentStyled(text string, style lipgloss.Style) string {
 // the way the picker shows them.
 func loadCmd(cfg *twin.Config, file string, gen int) tea.Cmd {
 	return func() tea.Msg {
-		programs, err := twin.LoadPrograms(cfg, file, "", false)
+		programs, err := twin.LoadPrograms(cfg, []string{file}, "", false)
 		if err != nil {
 			return programsMsg{gen: gen, err: err}
 		}

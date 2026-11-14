@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -21,7 +20,7 @@ func cmdList(cfg *twin.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	programs, err := twin.LoadPrograms(cfg, opts.file, opts.label, opts.showAll)
+	programs, err := twin.LoadPrograms(cfg, opts.files, opts.label.value, opts.showAll)
 	if err != nil {
 		return err
 	}
@@ -43,16 +42,23 @@ func cmdStatus(cfg *twin.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	programs, err := twin.LoadPrograms(cfg, opts.file, opts.label, opts.showAll)
+	programs, err := twin.LoadPrograms(cfg, opts.files, opts.label.value, opts.showAll)
 	if err != nil {
 		return err
 	}
-	if err := verifyDrift(cfg, programs); err != nil {
-		return err
+	// A directory rsync could not verify stays unverified. The rest of the
+	// status is still worth printing; the exit code reports the failure.
+	verifyErr := verifyDrift(cfg, programs)
+	if verifyErr != nil {
+		fmt.Fprintf(os.Stderr, "verify: %v\n", verifyErr)
+		verifyErr = errExit
 	}
 
 	if opts.json {
-		return printJSON(twin.ProgramsJSON(programs))
+		if err := printJSON(twin.ProgramsJSON(programs)); err != nil {
+			return err
+		}
+		return verifyErr
 	}
 
 	tty := isTerminal(os.Stdout)
@@ -75,10 +81,12 @@ func cmdStatus(cfg *twin.Config, args []string) error {
 			fmt.Printf("    %s%s\n", j.Path, conflict)
 			if j.Directory {
 				// Directory mtimes prove nothing — the drift verdict replaces them.
-				note := "(not checked — target unavailable)"
+				note := "(not checked)"
 				switch {
 				case j.Drift != nil:
 					note = driftSummary(j.Drift)
+				case j.TargetUnreachable:
+					note = "(not checked — target unavailable)"
 				case !j.Verify():
 					note = "(not checked — Verify: false)"
 				}
@@ -113,7 +121,7 @@ func cmdStatus(cfg *twin.Config, args []string) error {
 			}
 		}
 	}
-	return nil
+	return verifyErr
 }
 
 // verifyDrift asks rsync what a sync of each directory job would actually do.
@@ -161,22 +169,20 @@ func cmdSync(cfg *twin.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	programs, err := twin.LoadPrograms(cfg, opts.file, opts.label, opts.showAll)
+	programs, err := twin.LoadPrograms(cfg, opts.files, opts.label.value, opts.showAll)
 	if err != nil {
 		return err
 	}
-	if opts.pattern != "" {
-		var kept []*twin.Program
-		for _, p := range programs {
-			if strings.Contains(strings.ToLower(p.Name), strings.ToLower(opts.pattern)) {
-				kept = append(kept, p)
-			}
+	if len(opts.patterns) > 0 {
+		programs, err = matchPrograms(programs, opts.patterns)
+		if err != nil {
+			return err
 		}
-		programs = kept
 	}
+	// Selected sync-files with nothing active in them: nothing to do.
 	if len(programs) == 0 {
 		if !opts.quiet {
-			fmt.Println("no matching programs")
+			fmt.Println("no active programs")
 		}
 		return nil
 	}
@@ -192,6 +198,32 @@ func cmdSync(cfg *twin.Config, args []string) error {
 		return errExit
 	}
 	return nil
+}
+
+// matchPrograms keeps the programs whose name contains one of the patterns,
+// ignoring case, in their order. A pattern that matches no program is an
+// error: a sync that selected nothing must not end like one that had
+// nothing to transfer.
+func matchPrograms(programs []*twin.Program, patterns []string) ([]*twin.Program, error) {
+	keep := make([]bool, len(programs))
+	for _, pat := range patterns {
+		found := false
+		for i, p := range programs {
+			if strings.Contains(strings.ToLower(p.Name), strings.ToLower(pat)) {
+				keep[i], found = true, true
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("no program matches -p %s", pat)
+		}
+	}
+	var kept []*twin.Program
+	for i, p := range programs {
+		if keep[i] {
+			kept = append(kept, p)
+		}
+	}
+	return kept, nil
 }
 
 // jobOutcome is what one job's sync did; the TUI keeps it on the row.
@@ -484,7 +516,7 @@ func cmdAdd(cfg *twin.Config, args []string) error {
 	if result == nil || !result.DryRun {
 		return nil
 	}
-	return cmdSync(cfg, []string{"-p", result.Program, "--file=" + filepath.Base(result.File), "--dry-run"})
+	return cmdSync(cfg, []string{"-p", result.Program, "--file=" + result.File, "--dry-run"})
 }
 
 // ── log ──────────────────────────────────────────────────────────────────────
@@ -497,6 +529,10 @@ func cmdLog(args []string) error {
 	fs.BoolVar(&json, "json", false, "")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if n < 1 {
+		return fmt.Errorf("-n needs a positive number, got %d", n)
 	}
 
 	entries := twin.JournalTail(n)
@@ -537,6 +573,70 @@ func cmdLog(args []string) error {
 			note = "changed"
 		}
 		fmt.Printf("%s  %s  %s  %s  (%s)\n", ts, mark, e.Program, e.Path, note)
+	}
+	return nil
+}
+
+// ── prune ────────────────────────────────────────────────────────────────────
+
+func cmdPrune(cfg *twin.Config, args []string) error {
+	var label onceArg
+	var files fileArgs
+	days, dryRun := 30, false
+	fs := newFlagSet("prune")
+	fs.IntVar(&days, "days", 30, "")
+	fs.Var(&label, "label", "")
+	fs.Var(&files, "file", "")
+	fs.BoolVar(&dryRun, "dry-run", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if days < 0 {
+		return fmt.Errorf("--days needs a number from 0, got %d", days)
+	}
+	// Disabled jobs count too: their backups are still on the target.
+	jobs, err := twin.LoadDefinitions(cfg, files, label.value, true)
+	if err != nil {
+		return err
+	}
+	targets := twin.BackupTargets(jobs)
+	if len(targets) == 0 {
+		fmt.Println("no Delete jobs, so no backups to prune")
+		return nil
+	}
+	cutoff := time.Now().AddDate(0, 0, -days)
+	verb := "removed"
+	if dryRun {
+		verb = "would remove"
+	}
+	allOK := true
+	for _, target := range targets {
+		fmt.Println(twin.BackupDir(target))
+		if reason := targetAvailability(&twin.Job{Target: target}); reason != "" {
+			fmt.Println("  skipped: " + reason)
+			continue
+		}
+		runs, err := twin.ListBackups(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+			allOK = false
+			continue
+		}
+		old := twin.OldBackups(runs, cutoff)
+		if !dryRun {
+			if err := twin.RemoveBackups(target, old); err != nil {
+				fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+				allOK = false
+				continue
+			}
+		}
+		for _, name := range old {
+			fmt.Printf("  %s %s\n", verb, name)
+		}
+		fmt.Printf("  %d of %d run(s) older than %d day(s), %d kept\n", len(old), len(runs), days, len(runs)-len(old))
+	}
+	if !allOK {
+		return errExit
 	}
 	return nil
 }
@@ -594,7 +694,7 @@ func cmdDoctor(cfg *twin.Config) error {
 	}
 
 	fmt.Println("\nTargets")
-	programs, err := twin.LoadPrograms(cfg, "", "", true)
+	programs, err := twin.LoadPrograms(cfg, nil, "", true)
 	if err != nil {
 		fmt.Printf("  ✗  %v\n", err)
 		ok = false

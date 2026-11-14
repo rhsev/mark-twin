@@ -79,8 +79,43 @@ func appendJournal(e JournalEntry) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(data, '\n'))
-	return err
+	if _, err = f.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return trimJournal(f)
+}
+
+// The journal is trimmed to its newest journalKeepLines lines once it grows
+// past journalMaxBytes. A line is about 140 bytes, so the file moves between
+// roughly half the limit and the limit.
+const (
+	journalMaxBytes  = 1 << 20
+	journalKeepLines = 4000
+)
+
+// trimJournal drops the oldest lines of an oversized journal. The new file
+// replaces the old one by rename, so a reader never sees half a journal.
+func trimJournal(f *os.File) error {
+	st, err := f.Stat()
+	if err != nil || st.Size() <= journalMaxBytes {
+		return err
+	}
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		return err
+	}
+	lines := bytes.SplitAfter(data, []byte("\n"))
+	if n := len(lines); n > 0 && len(lines[n-1]) == 0 {
+		lines = lines[:n-1]
+	}
+	if len(lines) <= journalKeepLines {
+		return nil
+	}
+	tmp := f.Name() + ".tmp"
+	if err := os.WriteFile(tmp, bytes.Join(lines[len(lines)-journalKeepLines:], nil), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, f.Name())
 }
 
 // lastLine is the last non-empty trimmed line of output.
@@ -105,6 +140,7 @@ func JournalTail(n int) []JournalEntry {
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
+	n = max(n, 0)
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}

@@ -520,3 +520,31 @@ func TestTUIFooterActivityAndSuggestion(t *testing.T) {
 		t.Error("a status takes the second line")
 	}
 }
+
+func TestMatchProgramsNeedsEveryPatternToMatch(t *testing.T) {
+	programs := []*twin.Program{{Name: "fileview"}, {Name: "Milan"}, {Name: "grubber"}}
+	names := func(ps []*twin.Program) string {
+		var out []string
+		for _, p := range ps {
+			out = append(out, p.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	got, err := matchPrograms(programs, []string{"milan", "FILE", "file"})
+	if err != nil || names(got) != "fileview,Milan" {
+		t.Errorf("%q %v", names(got), err)
+	}
+	if _, err := matchPrograms(programs, []string{"milan", "nope"}); err == nil {
+		t.Error("a pattern without a match must be an error")
+	}
+}
+
+func TestOptionsGivenTwice(t *testing.T) {
+	if _, err := parseFilterOpts([]string{"--label", "a", "--label", "b"}); err == nil {
+		t.Error("a second --label must be refused")
+	}
+	o, err := parseSyncOpts([]string{"-p", "a", "--pattern", "b", "--file", "x", "--file", "y"})
+	if err != nil || len(o.patterns) != 2 || len(o.files) != 2 {
+		t.Errorf("%v %v", o, err)
+	}
+}
